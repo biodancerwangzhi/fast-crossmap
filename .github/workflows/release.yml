@@ -1,0 +1,167 @@
+# =============================================================================
+# FastCrossMap 多平台发布工作流
+# 自动构建 Linux, Windows, macOS 二进制文件
+# =============================================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (例如: 0.1.0)'
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ===========================================================================
+  # Linux 构建 (x86_64 和 aarch64)
+  # ===========================================================================
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: 安装 Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.target }}
+      
+      - name: 安装 cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+      
+      - name: 构建
+        run: cross build --release --target ${{ matrix.target }}
+      
+      - name: 打包
+        run: |
+          mkdir -p release
+          if [[ "${{ matrix.target }}" == *"musl"* ]]; then
+            SUFFIX="linux-x64-static"
+          elif [[ "${{ matrix.target }}" == *"aarch64"* ]]; then
+            SUFFIX="linux-arm64"
+          else
+            SUFFIX="linux-x64"
+          fi
+          
+          mkdir -p "fast-crossmap-$SUFFIX"
+          cp target/${{ matrix.target }}/release/fast-crossmap "fast-crossmap-$SUFFIX/"
+          tar -czvf "release/fast-crossmap-$SUFFIX.tar.gz" "fast-crossmap-$SUFFIX"
+      
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.target }}
+          path: release/*.tar.gz
+
+  # ===========================================================================
+  # Windows 构建
+  # ===========================================================================
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: 安装 Rust
+        uses: dtolnay/rust-action@stable
+      
+      - name: 构建
+        run: cargo build --release
+      
+      - name: 打包
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release
+          New-Item -ItemType Directory -Force -Path fast-crossmap-windows-x64
+          Copy-Item target/release/fast-crossmap.exe fast-crossmap-windows-x64/
+          Compress-Archive -Path fast-crossmap-windows-x64 -DestinationPath release/fast-crossmap-windows-x64.zip
+      
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: release/*.zip
+
+  # ===========================================================================
+  # macOS 构建 (Intel 和 Apple Silicon)
+  # ===========================================================================
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: 安装 Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.target }}
+      
+      - name: 构建
+        run: cargo build --release --target ${{ matrix.target }}
+      
+      - name: 打包
+        run: |
+          mkdir -p release
+          if [[ "${{ matrix.target }}" == *"aarch64"* ]]; then
+            SUFFIX="macos-arm64"
+          else
+            SUFFIX="macos-x64"
+          fi
+          
+          mkdir -p "fast-crossmap-$SUFFIX"
+          cp target/${{ matrix.target }}/release/fast-crossmap "fast-crossmap-$SUFFIX/"
+          tar -czvf "release/fast-crossmap-$SUFFIX.tar.gz" "fast-crossmap-$SUFFIX"
+      
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.target }}
+          path: release/*.tar.gz
+
+  # ===========================================================================
+  # 创建 Release
+  # ===========================================================================
+  release:
+    needs: [build-linux, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      - name: 下载所有构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      
+      - name: 整理文件
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release/ \;
+          ls -la release/
+      
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

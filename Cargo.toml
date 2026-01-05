@@ -1,0 +1,74 @@
+[package]
+name = "fast-crossmap"
+version = "0.1.0"
+edition = "2021"
+authors = ["FastCrossMap Contributors"]
+description = "High-performance genome coordinate liftover tool"
+license = "MIT"
+repository = "https://github.com/example/fast-crossmap"
+keywords = ["bioinformatics", "genomics", "liftover", "crossmap"]
+categories = ["science", "command-line-utilities"]
+
+[dependencies]
+# 并行处理
+rayon = "1.10"
+
+# 区间检索
+rust-lapper = "1.1"
+
+# 命令行解析
+clap = { version = "4.5", features = ["derive"] }
+
+# 压缩文件支持
+flate2 = "1.0"
+bzip2 = "0.4"
+
+# 错误处理
+thiserror = "1.0"
+anyhow = "1.0"
+
+# 日志
+log = "0.4"
+env_logger = "0.11"
+
+# 内存映射
+memmap2 = "0.9"
+
+# 快速字节搜索
+memchr = "2.7"
+
+# 线程本地存储 (Buffer 池)
+thread_local = "1.1"
+
+# BigWig 支持
+bigtools = "0.5"
+
+# BAM/SAM/CRAM 支持
+rust-htslib = "0.47"
+
+[dev-dependencies]
+# 属性测试
+proptest = "1.4"
+
+# 基准测试
+criterion = "0.5"
+
+# 临时文件
+tempfile = "3.10"
+
+[[bin]]
+name = "fast-crossmap"
+path = "src/main.rs"
+
+[lib]
+name = "fast_crossmap"
+path = "src/lib.rs"
+
+[[bench]]
+name = "benchmark"
+harness = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

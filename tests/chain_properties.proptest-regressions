@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b80015ace88005da1be9408a907a32a7f3913f7b5f152b514045041afd508655 # shrinks to header = ChainHeaderData { score: 148912, target_name: "18", target_size: 290323878, target_strand: Minus, target_start: 21992, target_end: 31278, source_name: "chrM", source_size: 260739795, source_strand: Minus, source_start: 36868663, source_end: 36909096, chain_id: 464 }
