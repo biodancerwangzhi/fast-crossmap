@@ -78,7 +78,23 @@ jobs:
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
       
+      - name: 安装 OpenSSL
+        run: |
+          choco install openssl -y
+          echo "OPENSSL_DIR=C:\Program Files\OpenSSL-Win64" >> $env:GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=C:\Program Files\OpenSSL-Win64\lib" >> $env:GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=C:\Program Files\OpenSSL-Win64\include" >> $env:GITHUB_ENV
+      
+      - name: 安装 vcpkg 依赖
+        run: |
+          vcpkg integrate install
+          vcpkg install openssl:x64-windows-static
+      
       - name: 构建
+        env:
+          OPENSSL_DIR: C:\Program Files\OpenSSL-Win64
+          OPENSSL_STATIC: 1
+          VCPKGRS_DYNAMIC: 0
         run: cargo build --release
       
       - name: 打包
