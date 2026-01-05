@@ -88,15 +88,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path fast-crossmap-windows-x64
           Copy-Item target/release/fast-crossmap.exe fast-crossmap-windows-x64/
           # 添加说明文件
-          @"
-FastCrossMap for Windows
-========================
-
-Note: This Windows build does NOT include BAM/SAM/CRAM support.
-Supported formats: BED, VCF, GVCF, GFF, GTF, Wiggle, bedGraph, BigWig, MAF
-
-For BAM support, please use the Linux or macOS version.
-"@ | Out-File -FilePath fast-crossmap-windows-x64/README.txt -Encoding utf8
+          $readmePath = "fast-crossmap-windows-x64/README.txt"
+          "FastCrossMap for Windows" | Out-File -FilePath $readmePath -Encoding utf8
+          "========================`n" | Out-File -FilePath $readmePath -Encoding utf8 -Append
+          "Note: This Windows build does NOT include BAM/SAM/CRAM support." | Out-File -FilePath $readmePath -Encoding utf8 -Append
+          "Supported formats: BED, VCF, GVCF, GFF, GTF, Wiggle, bedGraph, BigWig, MAF`n" | Out-File -FilePath $readmePath -Encoding utf8 -Append
+          "For BAM support, please use the Linux or macOS version." | Out-File -FilePath $readmePath -Encoding utf8 -Append
+          
           Compress-Archive -Path fast-crossmap-windows-x64 -DestinationPath release/fast-crossmap-windows-x64.zip
       
       - name: 上传构建产物
