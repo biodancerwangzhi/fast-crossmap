@@ -165,6 +165,7 @@ enum Commands {
         chrom_style: ChromStyleArg,
     },
     /// Convert BAM/SAM/CRAM format file
+    #[cfg(feature = "bam")]
     Bam {
         /// Chain file for coordinate conversion
         chain: PathBuf,
@@ -314,6 +315,7 @@ fn main() -> anyhow::Result<()> {
             eprintln!("Time elapsed:    {:.2}s", start.elapsed().as_secs_f64());
         }
         
+        #[cfg(feature = "bam")]
         Commands::Bam { chain, input, output, threads, chrom_style } => {
             let mapper = load_chain(&chain, chrom_style, cli.compat_mode)?;
             

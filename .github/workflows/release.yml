@@ -67,7 +67,7 @@ jobs:
           path: release/*.tar.gz
 
   # ===========================================================================
-  # Windows 构建
+  # Windows 构建 (不含 BAM 支持)
   # ===========================================================================
   build-windows:
     runs-on: windows-latest
@@ -78,24 +78,8 @@ jobs:
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
       
-      - name: 安装 OpenSSL
-        run: |
-          choco install openssl -y
-          echo "OPENSSL_DIR=C:\Program Files\OpenSSL-Win64" >> $env:GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=C:\Program Files\OpenSSL-Win64\lib" >> $env:GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=C:\Program Files\OpenSSL-Win64\include" >> $env:GITHUB_ENV
-      
-      - name: 安装 vcpkg 依赖
-        run: |
-          vcpkg integrate install
-          vcpkg install openssl:x64-windows-static
-      
-      - name: 构建
-        env:
-          OPENSSL_DIR: C:\Program Files\OpenSSL-Win64
-          OPENSSL_STATIC: 1
-          VCPKGRS_DYNAMIC: 0
-        run: cargo build --release
+      - name: 构建 (不含 BAM 支持)
+        run: cargo build --release --no-default-features
       
       - name: 打包
         shell: pwsh
@@ -103,6 +87,16 @@ jobs:
           New-Item -ItemType Directory -Force -Path release
           New-Item -ItemType Directory -Force -Path fast-crossmap-windows-x64
           Copy-Item target/release/fast-crossmap.exe fast-crossmap-windows-x64/
+          # 添加说明文件
+          @"
+FastCrossMap for Windows
+========================
+
+Note: This Windows build does NOT include BAM/SAM/CRAM support.
+Supported formats: BED, VCF, GVCF, GFF, GTF, Wiggle, bedGraph, BigWig, MAF
+
+For BAM support, please use the Linux or macOS version.
+"@ | Out-File -FilePath fast-crossmap-windows-x64/README.txt -Encoding utf8
           Compress-Archive -Path fast-crossmap-windows-x64 -DestinationPath release/fast-crossmap-windows-x64.zip
       
       - name: 上传构建产物

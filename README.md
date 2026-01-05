@@ -14,7 +14,9 @@
 - ✅ **100% compatible** with CrossMap output (strict mode)
 - 📦 **8 file formats** supported: BED, BAM/SAM/CRAM, VCF, GVCF, GFF/GTF, Wiggle, BigWig, MAF
 - 🗜️ **Compressed file support**: .gz, .bz2 for both chain files and input files
-- 🖥️ **Cross-platform**: Linux, macOS, Windows
+- 🖥️ **Cross-platform**: Linux, macOS, Windows*
+
+> **Note**: Windows builds do not include BAM/SAM/CRAM support due to htslib dependencies. For BAM processing, use Linux or macOS.
 
 ## Performance
 
@@ -35,15 +37,21 @@
 Download from [Releases](https://github.com/example/fast-crossmap/releases):
 
 ```bash
-# Linux
+# Linux (x64)
 wget https://github.com/example/fast-crossmap/releases/download/v0.1.0/fast-crossmap-linux-x64.tar.gz
 tar -xzf fast-crossmap-linux-x64.tar.gz
 ./fast-crossmap --help
 
+# Linux (ARM64)
+wget https://github.com/example/fast-crossmap/releases/download/v0.1.0/fast-crossmap-linux-arm64.tar.gz
+
 # macOS (Apple Silicon)
 wget https://github.com/example/fast-crossmap/releases/download/v0.1.0/fast-crossmap-macos-arm64.tar.gz
 
-# Windows
+# macOS (Intel)
+wget https://github.com/example/fast-crossmap/releases/download/v0.1.0/fast-crossmap-macos-x64.tar.gz
+
+# Windows (x64) - Note: No BAM support
 # Download fast-crossmap-windows-x64.zip from Releases
 ```
 
@@ -53,6 +61,9 @@ wget https://github.com/example/fast-crossmap/releases/download/v0.1.0/fast-cros
 # Requires Rust 1.70+
 cargo build --release
 ./target/release/fast-crossmap --help
+
+# Build without BAM support (for Windows or minimal dependencies)
+cargo build --release --no-default-features
 ```
 
 ## Usage

@@ -9,6 +9,13 @@ repository = "https://github.com/example/fast-crossmap"
 keywords = ["bioinformatics", "genomics", "liftover", "crossmap"]
 categories = ["science", "command-line-utilities"]
 
+[features]
+default = ["bam"]
+# BAM/SAM/CRAM 支持 (需要 htslib，Windows 上难以编译)
+bam = ["rust-htslib"]
+# 完整功能 (所有格式)
+full = ["bam"]
+
 [dependencies]
 # 并行处理
 rayon = "1.10"
@@ -43,8 +50,8 @@ thread_local = "1.1"
 # BigWig 支持
 bigtools = "0.5"
 
-# BAM/SAM/CRAM 支持
-rust-htslib = "0.47"
+# BAM/SAM/CRAM 支持 (可选，Windows 上禁用)
+rust-htslib = { version = "0.47", optional = true }
 
 [dev-dependencies]
 # 属性测试
