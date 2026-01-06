@@ -1,8 +1,8 @@
 # FastCrossMap
 
-[![Release](https://img.shields.io/github/v/release/example/fast-crossmap)](https://github.com/example/fast-crossmap/releases)
+[![Release](https://img.shields.io/github/v/release/biodancerwangzhi/fast-crossmap)](https://github.com/biodancerwangzhi/fast-crossmap/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Build Status](https://github.com/example/fast-crossmap/workflows/Release/badge.svg)](https://github.com/example/fast-crossmap/actions)
+[![Build Status](https://github.com/biodancerwangzhi/fast-crossmap/workflows/Release/badge.svg)](https://github.com/biodancerwangzhi/fast-crossmap/actions)
 
 **FastCrossMap** is a high-performance genome coordinate liftover tool written in Rust. It achieves **10-20x speedup** over Python CrossMap while maintaining **100% output compatibility**.
 
@@ -34,22 +34,22 @@
 
 ### Pre-built Binaries
 
-Download from [Releases](https://github.com/example/fast-crossmap/releases):
+Download from [Releases](https://github.com/biodancerwangzhi/fast-crossmap/releases):
 
 ```bash
 # Linux (x64)
-wget https://github.com/example/fast-crossmap/releases/download/v0.1.0/fast-crossmap-linux-x64.tar.gz
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-linux-x64.tar.gz
 tar -xzf fast-crossmap-linux-x64.tar.gz
 ./fast-crossmap --help
 
 # Linux (ARM64)
-wget https://github.com/example/fast-crossmap/releases/download/v0.1.0/fast-crossmap-linux-arm64.tar.gz
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-linux-arm64.tar.gz
 
 # macOS (Apple Silicon)
-wget https://github.com/example/fast-crossmap/releases/download/v0.1.0/fast-crossmap-macos-arm64.tar.gz
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-macos-arm64.tar.gz
 
 # macOS (Intel)
-wget https://github.com/example/fast-crossmap/releases/download/v0.1.0/fast-crossmap-macos-x64.tar.gz
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-macos-x64.tar.gz
 
 # Windows (x64) - Note: No BAM support
 # Download fast-crossmap-windows-x64.zip from Releases
@@ -67,6 +67,26 @@ cargo build --release --no-default-features
 ```
 
 ## Usage
+
+### Download Chain Files
+
+Chain files are required for coordinate conversion. Download from UCSC:
+
+```bash
+# Human: hg19 → hg38
+wget https://hgdownload.cse.ucsc.edu/goldenpath/hg19/liftOver/hg19ToHg38.over.chain.gz
+
+# Human: hg38 → hg19
+wget https://hgdownload.cse.ucsc.edu/goldenpath/hg38/liftOver/hg38ToHg19.over.chain.gz
+
+# Mouse: mm9 → mm10
+wget https://hgdownload.cse.ucsc.edu/goldenpath/mm9/liftOver/mm9ToMm10.over.chain.gz
+
+# Mouse: mm10 → mm39
+wget https://hgdownload.cse.ucsc.edu/goldenpath/mm10/liftOver/mm10ToMm39.over.chain.gz
+```
+
+Browse all available chain files: https://hgdownload.cse.ucsc.edu/downloads.html
 
 ### Basic Usage
 
@@ -154,9 +174,9 @@ If you use FastCrossMap in your research, please cite:
 ```bibtex
 @software{fastcrossmap,
   title = {FastCrossMap: High-Performance Genome Coordinate Liftover},
-  author = {FastCrossMap Contributors},
+  author = {Wang, Zhi},
   year = {2026},
-  url = {https://github.com/example/fast-crossmap}
+  url = {https://github.com/biodancerwangzhi/fast-crossmap}
 }
 ```
 
