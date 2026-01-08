@@ -204,6 +204,24 @@ impl<R: BufRead> Iterator for WigReader<R> {
             }
             
             // Parse data line
+            // Check if it's a bedGraph line (4 columns: chrom start end value)
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 4 {
+                // Try to parse as bedGraph format
+                if let (Ok(start), Ok(end), Ok(value)) = (
+                    parts[1].parse::<u64>(),
+                    parts[2].parse::<u64>(),
+                    parts[3].parse::<f64>(),
+                ) {
+                    return Some(Ok(WigDataPoint {
+                        chrom: parts[0].to_string(),
+                        start,
+                        end,
+                        value,
+                    }));
+                }
+            }
+            
             let decl = match &self.current_decl {
                 Some(d) => d,
                 None => {

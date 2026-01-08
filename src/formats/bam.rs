@@ -239,14 +239,17 @@ fn build_target_header(
 ) -> Header {
     let mut new_header = Header::new();
     
-    // Add HD line
+    // Add HD line - use VN:1.0 and SO:coordinate for CrossMap compatibility
     let mut hd_record = HeaderRecord::new(b"HD");
-    hd_record.push_tag(b"VN", "1.6");
-    hd_record.push_tag(b"SO", "unsorted");
+    hd_record.push_tag(b"VN", "1.0");
+    hd_record.push_tag(b"SO", "coordinate");
     new_header.push_record(&hd_record);
     
-    // Add SQ lines for target chromosomes
-    for (chrom, size) in target_sizes {
+    // Add SQ lines for target chromosomes (sorted alphabetically for consistency)
+    let mut sorted_chroms: Vec<_> = target_sizes.iter().collect();
+    sorted_chroms.sort_by(|a, b| a.0.cmp(b.0));
+    
+    for (chrom, size) in sorted_chroms {
         let mut sq_record = HeaderRecord::new(b"SQ");
         sq_record.push_tag(b"SN", chrom);
         sq_record.push_tag(b"LN", &size.to_string());
@@ -315,8 +318,10 @@ fn convert_record(
     
     let query_strand = if record.is_reverse() { Strand::Minus } else { Strand::Plus };
     let segments = mapper.map(&chrom, start, end, query_strand)?;
-    if segments.len() != 1 { return None; }
+    if segments.is_empty() { return None; }
     
+    // CrossMap behavior: use first segment, mark as secondary if multiple mappings
+    let is_multiple = segments.len() > 1;
     let seg = &segments[0];
     let target_chrom = &seg.target.chrom;
     let target_start = seg.target.start;
@@ -340,14 +345,25 @@ fn convert_record(
     new_record.set_tid(target_tid);
     new_record.set_pos(target_start as i64);
     
+    // Set mate information
+    // CrossMap behavior: for single-end reads, set RNEXT to "*" (tid=-1) and PNEXT to 0
+    // For paired-end reads, this would need to be updated based on mate mapping
+    // SAM format: PNEXT is 1-based, so 0 in internal representation = 1 in SAM output
+    new_record.set_mtid(-1);  // RNEXT = "*"
+    new_record.set_mpos(0);   // PNEXT = 1 (0-based internal, 1-based in SAM)
+    new_record.set_insert_size(0);  // TLEN = 0
+    
     let mut flags = record.flags();
     if need_revcomp { flags ^= 0x10; }
+    // CrossMap behavior: set secondary alignment flag (0x100) for multiple mappings
+    if is_multiple { flags |= 0x100; }
     new_record.set_flags(flags);
+    // CrossMap behavior: preserve original MAPQ for multiple mappings
     new_record.set_mapq(record.mapq());
     
     let tag = if record.is_paired() {
         if record.is_mate_unmapped() { AlignmentTag::MU } else { AlignmentTag::MM }
-    } else { AlignmentTag::SM };
+    } else if is_multiple { AlignmentTag::SM } else { AlignmentTag::SU };
     
     // Copy auxiliary tags
     for aux in record.aux_iter() {
@@ -361,6 +377,15 @@ fn convert_record(
     }
     
     Some((new_record, tag))
+}
+
+/// Determine output format based on file extension
+fn get_output_format(path: &Path) -> bam::Format {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("sam") => bam::Format::Sam,
+        Some("cram") => bam::Format::Cram,
+        _ => bam::Format::Bam, // Default to BAM
+    }
 }
 
 /// Convert a BAM/SAM/CRAM file
@@ -377,7 +402,9 @@ pub fn convert_bam<P: AsRef<Path>>(
     let target_sizes = mapper.target_sizes();
     let output_header = build_target_header(&input_header, target_sizes);
     
-    let mut writer = bam::Writer::from_path(output.as_ref(), &output_header, bam::Format::Bam)?;
+    // Determine output format based on file extension
+    let output_format = get_output_format(output.as_ref());
+    let mut writer = bam::Writer::from_path(output.as_ref(), &output_header, output_format)?;
     writer.set_threads(threads)?;
     let output_header_view = writer.header().clone();
     
@@ -387,11 +414,40 @@ pub fn convert_bam<P: AsRef<Path>>(
     while reader.read(&mut record).is_some() {
         stats.total += 1;
         if record.is_paired() { stats.paired += 1; } else { stats.single += 1; }
-        if record.is_unmapped() { stats.unmapped += 1; continue; }
+        
+        // Handle originally unmapped reads - CrossMap outputs them as-is
+        if record.is_unmapped() {
+            stats.unmapped += 1;
+            // Create a new record for unmapped read
+            let mut new_record = Record::new();
+            new_record.set(record.qname(), None, &record.seq().as_bytes(), &record.qual().to_vec());
+            new_record.set_flags(record.flags() | 0x4);  // Ensure unmapped flag is set
+            new_record.set_tid(-1);  // RNAME = "*"
+            new_record.set_pos(0);   // POS = 1 (0-based internal)
+            new_record.set_mapq(255);  // MAPQ = 255 for unmapped
+            new_record.set_mtid(-1);  // RNEXT = "*"
+            new_record.set_mpos(0);   // PNEXT = 1
+            new_record.set_insert_size(0);  // TLEN = 0
+            writer.write(&new_record)?;
+            continue;
+        }
         
         match convert_record(&record, &input_header, &output_header_view, mapper) {
             Some((new_record, _tag)) => { writer.write(&new_record)?; stats.mapped += 1; }
-            None => { stats.failed += 1; }
+            None => {
+                // CrossMap behavior: output failed-to-map reads as unmapped
+                stats.failed += 1;
+                let mut new_record = Record::new();
+                new_record.set(record.qname(), None, &record.seq().as_bytes(), &record.qual().to_vec());
+                new_record.set_flags(0x4);  // Unmapped flag
+                new_record.set_tid(-1);  // RNAME = "*"
+                new_record.set_pos(0);   // POS = 1 (0-based internal)
+                new_record.set_mapq(255);  // MAPQ = 255 for unmapped
+                new_record.set_mtid(-1);  // RNEXT = "*"
+                new_record.set_mpos(0);   // PNEXT = 1
+                new_record.set_insert_size(0);  // TLEN = 0
+                writer.write(&new_record)?;
+            }
         }
     }
     

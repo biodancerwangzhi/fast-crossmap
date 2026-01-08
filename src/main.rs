@@ -195,6 +195,18 @@ enum Commands {
         #[arg(long = "chromid", default_value = "a")]
         chrom_style: ChromStyleArg,
     },
+    /// Convert BigWig format file
+    Bigwig {
+        /// Chain file for coordinate conversion
+        chain: PathBuf,
+        /// Input BigWig file
+        input: PathBuf,
+        /// Output file prefix (will create .bgr file)
+        output: Option<PathBuf>,
+        /// Chromosome ID style: a(as-is), s(short), l(long)
+        #[arg(long = "chromid", default_value = "a")]
+        chrom_style: ChromStyleArg,
+    },
 }
 
 
@@ -346,6 +358,21 @@ fn main() -> anyhow::Result<()> {
             eprintln!("  - Unmapped:    {}", stats.unmapped);
             eprintln!("  - CrossChrom:  {}", stats.cross_chrom);
             eprintln!("  - LowRatio:    {}", stats.low_ratio);
+            eprintln!("Time elapsed:    {:.2}s", start.elapsed().as_secs_f64());
+        }
+        
+        Commands::Bigwig { chain, input, output, chrom_style } => {
+            let mapper = load_chain(&chain, chrom_style, cli.compat_mode)?;
+            let output_path = output.unwrap_or_else(|| PathBuf::from("output"));
+            
+            eprintln!("Converting BigWig file: {:?} -> {:?}", input, output_path);
+            let stats = formats::convert_bigwig(&input, &output_path, &mapper, false)?;
+            
+            eprintln!("\n=== Conversion Statistics ===");
+            eprintln!("Total records:   {}", stats.total);
+            eprintln!("Successful:      {}", stats.success);
+            eprintln!("Failed:          {}", stats.failed);
+            eprintln!("Merged:          {}", stats.merged);
             eprintln!("Time elapsed:    {:.2}s", start.elapsed().as_secs_f64());
         }
     }

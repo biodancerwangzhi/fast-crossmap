@@ -1,11 +1,11 @@
 [package]
 name = "fast-crossmap"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["FastCrossMap Contributors"]
 description = "High-performance genome coordinate liftover tool"
 license = "MIT"
-repository = "https://github.com/example/fast-crossmap"
+repository = "https://github.com/biodancerwangzhi/fast-crossmap"
 keywords = ["bioinformatics", "genomics", "liftover", "crossmap"]
 categories = ["science", "command-line-utilities"]
 

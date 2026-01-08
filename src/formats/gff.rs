@@ -214,22 +214,9 @@ fn convert_gff_record(
     let new_end = seg.target.end;
     
     // Determine output strand
-    // If target strand differs from source, complement the strand
-    let output_strand = if view.strand.is_some() {
-        match seg.target.strand {
-            Strand::Plus => view.strand_char,
-            Strand::Minus => {
-                // Complement the strand
-                match view.strand_char {
-                    "+" => "-",
-                    "-" => "+",
-                    _ => view.strand_char,
-                }
-            }
-        }
-    } else {
-        view.strand_char
-    };
+    // CrossMap behavior: use the strand from the mapping result
+    // fields[6] = a[1][3] in CrossMap's mapgff.py
+    let output_strand = seg.target.strand.to_char();
     
     // Build output line
     Some(format!(

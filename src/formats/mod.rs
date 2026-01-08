@@ -21,3 +21,4 @@ pub use maf::{MafRecordView, MafParseError, MafColumnIndices, convert_maf, Conve
 pub use region::{RegionError, RegionResult, FailureReason, map_region, convert_region, parse_bed_line, ConversionStats as RegionConversionStats};
 pub use vcf::{VcfRecordView, VcfParseError, convert_vcf, ConversionStats as VcfConversionStats};
 pub use wig::{WigReader, WigDeclaration, WigFormat, WigDataPoint, BedGraphRecord, WigParseError, convert_wig, ConversionStats as WigConversionStats};
+pub use wig::bigwig::convert_bigwig;

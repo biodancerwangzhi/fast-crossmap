@@ -229,8 +229,222 @@ pub enum ConversionResult {
     PassThrough(String),
 }
 
-/// Convert a single BED record
-fn convert_bed_record(
+/// Represents a single block in BED12 format
+#[derive(Debug, Clone)]
+struct Block {
+    start: u64,  // Absolute start position
+    end: u64,    // Absolute end position
+}
+
+/// Parse BED12 blocks from a record view
+fn parse_bed12_blocks(view: &BedRecordView) -> Option<Vec<Block>> {
+    let chrom_start = view.start;
+    let block_sizes_str = view.block_sizes()?;
+    let block_starts_str = view.block_starts()?;
+    
+    let sizes: Vec<u64> = block_sizes_str
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    
+    let starts: Vec<u64> = block_starts_str
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    
+    if sizes.len() != starts.len() || sizes.is_empty() {
+        return None;
+    }
+    
+    let blocks: Vec<Block> = sizes.iter().zip(starts.iter())
+        .map(|(&size, &rel_start)| Block {
+            start: chrom_start + rel_start,
+            end: chrom_start + rel_start + size,
+        })
+        .collect();
+    
+    Some(blocks)
+}
+
+/// Convert a BED12 record by mapping each block individually
+fn convert_bed12_record(
+    view: &BedRecordView,
+    mapper: &CoordinateMapper,
+    input_strand: Strand,
+) -> ConversionResult {
+    // Parse blocks
+    let blocks = match parse_bed12_blocks(view) {
+        Some(b) if !b.is_empty() => b,
+        _ => {
+            // Fall back to regular mapping if blocks can't be parsed
+            return convert_bed_record_simple(view, mapper, input_strand);
+        }
+    };
+    
+    // Map each block individually
+    let mut mapped_blocks: Vec<(u64, u64, Strand, String)> = Vec::with_capacity(blocks.len());
+    let mut target_chrom: Option<String> = None;
+    let mut target_strand: Option<Strand> = None;
+    
+    for block in &blocks {
+        let result = mapper.map(view.chrom, block.start, block.end, input_strand);
+        
+        match result {
+            Some(segments) if segments.len() == 1 => {
+                // CrossMap behavior: only accept blocks that map to exactly one segment
+                // If a block maps to multiple segments, the entire record fails
+                let seg = &segments[0];
+                
+                // Check all blocks map to the same chromosome and strand
+                if let Some(ref tc) = target_chrom {
+                    if tc != &seg.target.chrom {
+                        // Blocks map to different chromosomes - fail
+                        return ConversionResult::Failed(format_unmapped_line(view));
+                    }
+                } else {
+                    target_chrom = Some(seg.target.chrom.clone());
+                    target_strand = Some(seg.target.strand);
+                }
+                
+                mapped_blocks.push((seg.target.start, seg.target.end, seg.target.strand, seg.target.chrom.clone()));
+            }
+            _ => {
+                // Block failed to map or mapped to multiple segments - entire record fails
+                return ConversionResult::Failed(format_unmapped_line(view));
+            }
+        }
+    }
+    
+    if mapped_blocks.is_empty() {
+        return ConversionResult::Failed(format_unmapped_line(view));
+    }
+    
+    // Calculate new BED12 coordinates
+    // CrossMap behavior: use first block's start and last block's end
+    // CrossMap preserves the original block order from the input file
+    // It does NOT sort blocks by position
+    let new_chrom = target_chrom.unwrap();
+    let new_strand = target_strand.unwrap_or(input_strand);
+    
+    // CrossMap uses: new_chrom_st = exons_new_pos[0][1], new_chrom_end = exons_new_pos[-1][2]
+    // This is the FIRST and LAST block in original order, not min/max
+    let new_chrom_start = mapped_blocks.first().unwrap().0;
+    let new_chrom_end = mapped_blocks.last().unwrap().1;
+    
+    // Calculate new block starts (relative to new_chrom_start) preserving original order
+    let new_block_starts: Vec<String> = mapped_blocks.iter()
+        .map(|(s, _, _, _)| (s - new_chrom_start).to_string())
+        .collect();
+    
+    // Calculate new block sizes preserving original order
+    let new_block_sizes: Vec<String> = mapped_blocks.iter()
+        .map(|(s, e, _, _)| (e - s).to_string())
+        .collect();
+    
+    // Calculate new thick_start and thick_end
+    // CrossMap behavior: preserve the offset from chrom boundaries
+    // cds_start_offset = thick_start - chrom_start
+    // cds_end_offset = chrom_end - thick_end
+    // new_thick_start = new_chrom_start + cds_start_offset
+    // new_thick_end = new_chrom_end - cds_end_offset
+    let original_thick_start = view.thick_start().unwrap_or(view.start);
+    let original_thick_end = view.thick_end().unwrap_or(view.end);
+    
+    let cds_start_offset = original_thick_start.saturating_sub(view.start);
+    let cds_end_offset = view.end.saturating_sub(original_thick_end);
+    
+    let new_thick_start = (new_chrom_start + cds_start_offset).min(new_chrom_end);
+    let new_thick_end = new_chrom_end.saturating_sub(cds_end_offset).max(new_chrom_start);
+    
+    // Validate BED12 format: thick_start must be <= thick_end
+    // CrossMap's check_bed12 function rejects records where thickStart > thickEnd
+    if new_thick_start > new_thick_end {
+        return ConversionResult::Failed(format_unmapped_line(view));
+    }
+    
+    // Also validate: thickStart >= chromStart and thickEnd <= chromEnd
+    if new_thick_start < new_chrom_start || new_thick_end > new_chrom_end {
+        return ConversionResult::Failed(format_unmapped_line(view));
+    }
+    
+    // Additional validation: block_starts must be non-negative (check_bed12 requirement)
+    for (s, _, _, _) in &mapped_blocks {
+        if *s < new_chrom_start {
+            return ConversionResult::Failed(format_unmapped_line(view));
+        }
+    }
+    
+    // Build output line
+    let mut output = String::with_capacity(256);
+    
+    // Basic fields
+    output.push_str(&new_chrom);
+    output.push('\t');
+    output.push_str(&new_chrom_start.to_string());
+    output.push('\t');
+    output.push_str(&new_chrom_end.to_string());
+    
+    // Name (field 3)
+    if let Some(name) = view.name() {
+        output.push('\t');
+        output.push_str(name);
+    }
+    
+    // Score (field 4)
+    if view.field_count() > 4 {
+        if let Some(score) = view.score() {
+            output.push('\t');
+            output.push_str(score);
+        }
+    }
+    
+    // Strand (field 5)
+    if view.field_count() > 5 {
+        output.push('\t');
+        output.push(new_strand.to_char());
+    }
+    
+    // thick_start (field 6)
+    output.push('\t');
+    output.push_str(&new_thick_start.to_string());
+    
+    // thick_end (field 7)
+    output.push('\t');
+    output.push_str(&new_thick_end.to_string());
+    
+    // item_rgb (field 8)
+    if let Some(rgb) = view.item_rgb() {
+        output.push('\t');
+        output.push_str(rgb);
+    }
+    
+    // block_count (field 9)
+    output.push('\t');
+    output.push_str(&mapped_blocks.len().to_string());
+    
+    // block_sizes (field 10)
+    output.push('\t');
+    output.push_str(&new_block_sizes.join(","));
+    
+    // block_starts (field 11)
+    output.push('\t');
+    output.push_str(&new_block_starts.join(","));
+    
+    // Extra fields beyond BED12
+    for i in 12..view.field_count() {
+        if let Some(field) = view.field(i) {
+            output.push('\t');
+            output.push_str(field);
+        }
+    }
+    
+    ConversionResult::Success(output)
+}
+
+/// Convert a single BED record (simple version for non-BED12)
+fn convert_bed_record_simple(
     view: &BedRecordView,
     mapper: &CoordinateMapper,
     input_strand: Strand,
@@ -257,6 +471,21 @@ fn convert_bed_record(
             ConversionResult::Failed(format_unmapped_line(view))
         }
     }
+}
+
+/// Convert a single BED record
+fn convert_bed_record(
+    view: &BedRecordView,
+    mapper: &CoordinateMapper,
+    input_strand: Strand,
+) -> ConversionResult {
+    // Use special BED12 handling if this is a BED12 record
+    if view.is_bed12() {
+        return convert_bed12_record(view, mapper, input_strand);
+    }
+    
+    // For non-BED12 records, use simple mapping
+    convert_bed_record_simple(view, mapper, input_strand)
 }
 
 /// Format output line for a successfully mapped segment
@@ -332,10 +561,43 @@ fn format_output_line(view: &BedRecordView, seg: &MappingSegment) -> String {
                 output.push_str(sizes);
             }
             
-            // block_starts (field 11) - preserve as-is
-            if let Some(starts) = view.block_starts() {
+            // block_starts (field 11) - recalculate relative to new chromStart
+            // CrossMap behavior: block_starts are relative to chromStart (always starting from 0)
+            // When coordinates change, we need to recalculate block_starts
+            // The first block_start should always be 0, and subsequent ones are adjusted
+            if let Some(starts_str) = view.block_starts() {
                 output.push('\t');
-                output.push_str(starts);
+                // Parse original block_starts and recalculate relative to new position
+                // CrossMap recalculates block_starts so they are relative to the new chromStart
+                // This means the first block_start becomes 0, and others are adjusted accordingly
+                let original_start = view.start;
+                let new_start = seg.target.start;
+                
+                // Calculate the offset between old and new start positions
+                let offset = new_start as i64 - original_start as i64;
+                
+                let new_starts: Vec<String> = starts_str
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| {
+                        if let Ok(start_val) = s.parse::<i64>() {
+                            // Original absolute position = original_start + start_val
+                            // New absolute position = original_start + start_val + offset
+                            // New relative position = (original_start + start_val + offset) - new_start
+                            //                       = original_start + start_val + offset - new_start
+                            //                       = original_start + start_val + (new_start - original_start) - new_start
+                            //                       = start_val
+                            // But CrossMap actually recalculates based on the mapped coordinates
+                            // The new relative position should be: start_val + offset
+                            // where offset = new_start - original_start
+                            let new_relative = start_val + offset;
+                            new_relative.to_string()
+                        } else {
+                            s.to_string()
+                        }
+                    })
+                    .collect();
+                output.push_str(&new_starts.join(","));
             }
         }
         
