@@ -267,7 +267,8 @@ fn convert_vcf_record(
             let seg = &segments[0];
             let target_chrom = &seg.target.chrom;
             let target_start = seg.target.start;
-            let target_strand = seg.target.strand; // Fixed: access strand from target MapResult
+            let target_end = seg.target.end;
+            let target_strand = seg.target.strand;
             
             // Get original fields
             let ref_allele = view.ref_allele().unwrap_or("N");
@@ -304,7 +305,7 @@ fn convert_vcf_record(
                 );
             }
             
-            // Process ALT alleles
+            // Process ALT alleles (CrossMap logic)
             let mut alt_alleles_updated = Vec::new();
             for alt_allele in alt_alleles_str.split(',') {
                 if dna::is_dna(alt_allele) {
@@ -336,26 +337,27 @@ fn convert_vcf_record(
                         }
                     };
                     
-                    // Only add if different from REF
-                    if updated != new_ref {
-                        alt_alleles_updated.push(updated);
-                    }
+                    // Add to list (will filter REF==ALT later, matching CrossMap)
+                    alt_alleles_updated.push(updated);
                 } else {
                     // Non-DNA allele (e.g., <DEL>, <INS>), keep as-is
                     alt_alleles_updated.push(alt_allele.to_string());
                 }
             }
             
-            // Check if all ALT alleles were filtered out
-            if alt_alleles_updated.is_empty() {
-                return ConversionResult::Failed(
-                    reconstruct_line(view),
-                    "Fail(REF==ALT)".to_string(),
-                );
-            }
+            // Filter out ALT alleles that equal REF (CrossMap: alt_alleles_updated = [i for i in alt_alleles_updated if i != ref_allele])
+            alt_alleles_updated.retain(|alt| alt != &new_ref);
             
-            // Check REF == ALT (unless noCompAllele is set)
-            if !no_comp_allele && alt_alleles_updated.len() == 1 && alt_alleles_updated[0] == new_ref {
+            // CrossMap behavior: when alt_alleles_updated is empty after filtering,
+            // it sets fields[4] = "" (empty string), then checks if fields[3] != fields[4].
+            // Since REF != "", the record is output with empty ALT.
+            // We match this behavior exactly.
+            
+            // Check REF == ALT for single allele case (unless noCompAllele is set)
+            // CrossMap: if fields[3] != fields[4] (after join)
+            // Note: when alt_alleles_updated is empty, join produces "", and REF != "" is true
+            let alt_joined = alt_alleles_updated.join(",");
+            if !no_comp_allele && alt_joined == new_ref {
                 return ConversionResult::Failed(
                     reconstruct_line(view),
                     "Fail(REF==ALT)".to_string(),
@@ -369,6 +371,7 @@ fn convert_vcf_record(
                 new_pos,
                 &new_ref,
                 &alt_alleles_updated,
+                target_end,
             );
             
             ConversionResult::Success(output)
@@ -390,6 +393,34 @@ fn convert_vcf_record(
     }
 }
 
+/// Update INFO field with new END value
+/// CrossMap uses: re.sub(r'END\=\d+', 'END=' + str(target_end), fields[7])
+fn update_info_end(info: &str, new_end: u64) -> String {
+    // Find END= pattern and replace the value
+    let mut result = String::with_capacity(info.len() + 20);
+    let mut i = 0;
+    let bytes = info.as_bytes();
+    
+    while i < bytes.len() {
+        // Look for "END=" pattern
+        if i + 4 <= bytes.len() && &bytes[i..i+4] == b"END=" {
+            result.push_str("END=");
+            i += 4;
+            // Skip the old number
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            // Write new value
+            result.push_str(&new_end.to_string());
+        } else {
+            result.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    
+    result
+}
+
 /// Format output line for a successfully mapped VCF record
 fn format_output_line(
     view: &VcfRecordView,
@@ -397,6 +428,7 @@ fn format_output_line(
     pos: u64,
     ref_allele: &str,
     alt_alleles: &[String],
+    target_end: u64,
 ) -> String {
     let mut output = String::with_capacity(512);
     
@@ -428,10 +460,10 @@ fn format_output_line(
     output.push_str(view.filter().unwrap_or("."));
     output.push('\t');
     
-    // INFO - update END if present
+    // INFO - update END if present (CrossMap behavior)
     let info = view.info().unwrap_or(".");
-    // TODO: Update END field if present
-    output.push_str(info);
+    let updated_info = update_info_end(info, target_end);
+    output.push_str(&updated_info);
     
     // FORMAT and samples
     if let Some(format) = view.format() {
@@ -473,14 +505,16 @@ pub mod pysam_stub {
     /// Simple FASTA reader for reference genome
     pub struct FastaReader {
         sequences: HashMap<String, Vec<u8>>,
+        chrom_order: Vec<String>,
     }
     
     impl FastaReader {
-        /// Open a FASTA file
+        /// Open a FASTA file and load all sequences
         pub fn open<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
             let file = std::fs::File::open(path)?;
             let reader = BufReader::new(file);
             let mut sequences = HashMap::new();
+            let mut chrom_order = Vec::new();
             let mut current_name = String::new();
             let mut current_seq = Vec::new();
             
@@ -488,6 +522,7 @@ pub mod pysam_stub {
                 let line = line?;
                 if line.starts_with('>') {
                     if !current_name.is_empty() {
+                        chrom_order.push(current_name.clone());
                         sequences.insert(current_name.clone(), current_seq.clone());
                     }
                     current_name = line[1..].split_whitespace().next().unwrap_or("").to_string();
@@ -498,13 +533,14 @@ pub mod pysam_stub {
             }
             
             if !current_name.is_empty() {
+                chrom_order.push(current_name.clone());
                 sequences.insert(current_name, current_seq);
             }
             
-            Ok(Self { sequences })
+            Ok(Self { sequences, chrom_order })
         }
         
-        /// Fetch a region from the reference
+        /// Fetch a region from the reference (0-based, half-open)
         pub fn fetch(&self, chrom: &str, start: u64, end: u64) -> Option<String> {
             // Try with and without chr prefix
             let seq = self.sequences.get(chrom)
@@ -526,14 +562,16 @@ pub mod pysam_stub {
             Some(String::from_utf8_lossy(&seq[start..end]).to_string())
         }
         
-        /// Get chromosome names
+        /// Get chromosome names in order
         pub fn references(&self) -> Vec<&str> {
-            self.sequences.keys().map(|s| s.as_str()).collect()
+            self.chrom_order.iter().map(|s| s.as_str()).collect()
         }
         
-        /// Get chromosome lengths
+        /// Get chromosome lengths in order
         pub fn lengths(&self) -> Vec<usize> {
-            self.sequences.values().map(|s| s.len()).collect()
+            self.chrom_order.iter()
+                .filter_map(|name| self.sequences.get(name).map(|s| s.len()))
+                .collect()
         }
     }
 }

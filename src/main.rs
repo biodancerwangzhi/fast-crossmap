@@ -89,11 +89,16 @@ enum Commands {
         chain: PathBuf,
         /// Input VCF file
         input: PathBuf,
+        /// Target reference genome FASTA file (required for proper REF allele update)
+        refgenome: PathBuf,
         /// Output file (optional, stdout if not specified)
         output: Option<PathBuf>,
         /// Number of threads (default: number of CPUs)
         #[arg(short = 't', long, default_value = "1")]
         threads: usize,
+        /// Don't filter variants where REF==ALT after liftover
+        #[arg(long = "no-comp-allele")]
+        no_comp_allele: bool,
         /// Chromosome ID style: a(as-is), s(short), l(long)
         #[arg(long = "chromid", default_value = "a")]
         chrom_style: ChromStyleArg,
@@ -119,14 +124,13 @@ enum Commands {
         chain: PathBuf,
         /// Input GVCF file
         input: PathBuf,
+        /// Target reference genome FASTA file (required for proper REF allele update)
+        refgenome: PathBuf,
         /// Output file (optional, stdout if not specified)
         output: Option<PathBuf>,
-        /// Reference genome FASTA file (optional)
-        #[arg(short = 'r', long)]
-        refgenome: Option<PathBuf>,
-        /// Compress output
-        #[arg(short = 'c', long)]
-        compress: bool,
+        /// Don't filter variants where REF==ALT after liftover
+        #[arg(long = "no-comp-allele")]
+        no_comp_allele: bool,
         /// Number of threads (default: number of CPUs)
         #[arg(short = 't', long, default_value = "1")]
         threads: usize,
@@ -140,14 +144,13 @@ enum Commands {
         chain: PathBuf,
         /// Input MAF file
         input: PathBuf,
+        /// Target reference genome FASTA file (required for proper REF allele update)
+        refgenome: PathBuf,
+        /// Target genome build name (e.g., GRCh38)
+        #[arg(short = 'b', long)]
+        build: String,
         /// Output file (optional, stdout if not specified)
         output: Option<PathBuf>,
-        /// Reference genome FASTA file (optional)
-        #[arg(short = 'r', long)]
-        refgenome: Option<PathBuf>,
-        /// Target genome build name (e.g., GRCh38)
-        #[arg(short = 'b', long, default_value = "GRCh38")]
-        build: String,
         /// Chromosome ID style: a(as-is), s(short), l(long)
         #[arg(long = "chromid", default_value = "a")]
         chrom_style: ChromStyleArg,
@@ -250,12 +253,13 @@ fn main() -> anyhow::Result<()> {
             eprintln!("Time elapsed:    {:.2}s", start.elapsed().as_secs_f64());
         }
         
-        Commands::Vcf { chain, input, output, threads, chrom_style } => {
+        Commands::Vcf { chain, input, refgenome, output, threads, no_comp_allele, chrom_style } => {
             let mapper = load_chain(&chain, chrom_style, cli.compat_mode)?;
             let output_path = output.unwrap_or_else(|| PathBuf::from("output.vcf"));
             
             eprintln!("Converting VCF file: {:?} -> {:?}", input, output_path);
-            let stats = formats::convert_vcf(&input, &output_path, &mapper, None::<&PathBuf>, false, threads)?;
+            eprintln!("Reference genome: {:?}", refgenome);
+            let stats = formats::convert_vcf(&input, &output_path, &mapper, Some(&refgenome), no_comp_allele, threads)?;
             
             eprintln!("\n=== Conversion Statistics ===");
             eprintln!("Total records:   {}", stats.total);
@@ -278,14 +282,15 @@ fn main() -> anyhow::Result<()> {
             eprintln!("Time elapsed:    {:.2}s", start.elapsed().as_secs_f64());
         }
         
-        Commands::Gvcf { chain, input, output, refgenome, compress, threads, chrom_style } => {
+        Commands::Gvcf { chain, input, refgenome, output, no_comp_allele, threads, chrom_style } => {
             let mapper = load_chain(&chain, chrom_style, cli.compat_mode)?;
             let output_path = output.unwrap_or_else(|| PathBuf::from("output.gvcf"));
             
             eprintln!("Converting GVCF file: {:?} -> {:?}", input, output_path);
+            eprintln!("Reference genome: {:?}", refgenome);
             let stats = formats::convert_gvcf(
                 &input, &output_path, &mapper, 
-                refgenome.as_ref(), compress, threads
+                Some(&refgenome), no_comp_allele, threads
             )?;
             
             eprintln!("\n=== Conversion Statistics ===");
@@ -295,14 +300,16 @@ fn main() -> anyhow::Result<()> {
             eprintln!("Time elapsed:    {:.2}s", start.elapsed().as_secs_f64());
         }
         
-        Commands::Maf { chain, input, output, refgenome, build, chrom_style } => {
+        Commands::Maf { chain, input, refgenome, build, output, chrom_style } => {
             let mapper = load_chain(&chain, chrom_style, cli.compat_mode)?;
             let output_path = output.unwrap_or_else(|| PathBuf::from("output.maf"));
             
             eprintln!("Converting MAF file: {:?} -> {:?}", input, output_path);
+            eprintln!("Reference genome: {:?}", refgenome);
+            eprintln!("Target build: {}", build);
             let stats = formats::convert_maf(
                 &input, &output_path, &mapper, 
-                refgenome.as_ref(), &build
+                Some(&refgenome), &build
             )?;
             
             eprintln!("\n=== Conversion Statistics ===");
@@ -366,7 +373,7 @@ fn main() -> anyhow::Result<()> {
             let output_path = output.unwrap_or_else(|| PathBuf::from("output"));
             
             eprintln!("Converting BigWig file: {:?} -> {:?}", input, output_path);
-            let stats = formats::convert_bigwig(&input, &output_path, &mapper, false)?;
+            let stats = formats::convert_bigwig(&input, &output_path, &mapper)?;
             
             eprintln!("\n=== Conversion Statistics ===");
             eprintln!("Total records:   {}", stats.total);

@@ -223,88 +223,61 @@ pub mod fasta_stub {
     use std::io::{BufRead, BufReader};
     
     /// Simple FASTA reader for reference genome
+    /// Loads all sequences into memory at once for fast access
     pub struct FastaReader {
-        /// Chromosome sequences (loaded on demand)
+        /// Chromosome sequences
         sequences: HashMap<String, Vec<u8>>,
-        /// Path to FASTA file
-        path: std::path::PathBuf,
     }
     
     impl FastaReader {
-        /// Open a FASTA file
+        /// Open a FASTA file and load all sequences into memory
         pub fn open<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
-            Ok(Self {
-                sequences: HashMap::new(),
-                path: path.as_ref().to_path_buf(),
-            })
-        }
-        
-        /// Load a chromosome sequence
-        fn load_chrom(&mut self, chrom: &str) -> std::io::Result<()> {
-            if self.sequences.contains_key(chrom) {
-                return Ok(());
-            }
-            
-            let file = std::fs::File::open(&self.path)?;
+            let file = std::fs::File::open(path)?;
             let reader = BufReader::new(file);
-            
-            let mut current_chrom: Option<String> = None;
+            let mut sequences = HashMap::new();
+            let mut current_name = String::new();
             let mut current_seq = Vec::new();
-            let mut found = false;
             
             for line in reader.lines() {
                 let line = line?;
                 if line.starts_with('>') {
-                    // Save previous chromosome if it matches
-                    if let Some(ref c) = current_chrom {
-                        if c == chrom {
-                            found = true;
-                            break;
-                        }
+                    if !current_name.is_empty() {
+                        sequences.insert(current_name.clone(), current_seq.clone());
                     }
-                    // Parse new chromosome name
-                    let name = line[1..].split_whitespace().next().unwrap_or("");
-                    // Handle both "chr1" and "1" formats
-                    let normalized = if name.starts_with("chr") {
-                        name.to_string()
-                    } else {
-                        format!("chr{}", name)
-                    };
-                    
-                    if normalized == chrom || name == chrom {
-                        current_chrom = Some(chrom.to_string());
-                        current_seq.clear();
-                    } else {
-                        current_chrom = None;
-                    }
-                } else if current_chrom.is_some() {
-                    current_seq.extend(line.as_bytes().iter().filter(|b| !b.is_ascii_whitespace()));
+                    current_name = line[1..].split_whitespace().next().unwrap_or("").to_string();
+                    current_seq.clear();
+                } else {
+                    current_seq.extend(line.trim().bytes());
                 }
             }
             
-            if found || current_chrom.is_some() {
-                self.sequences.insert(chrom.to_string(), current_seq);
+            if !current_name.is_empty() {
+                sequences.insert(current_name, current_seq);
             }
             
-            Ok(())
+            Ok(Self { sequences })
         }
         
         /// Fetch sequence at given position (0-based, half-open)
-        pub fn fetch(&mut self, chrom: &str, start: u64, end: u64) -> Option<String> {
-            // Try to load chromosome if not already loaded
-            if !self.sequences.contains_key(chrom) {
-                self.load_chrom(chrom).ok()?;
-            }
+        pub fn fetch(&self, chrom: &str, start: u64, end: u64) -> Option<String> {
+            // Try with and without chr prefix
+            let seq = self.sequences.get(chrom)
+                .or_else(|| {
+                    if chrom.starts_with("chr") {
+                        self.sequences.get(&chrom[3..])
+                    } else {
+                        self.sequences.get(&format!("chr{}", chrom))
+                    }
+                })?;
             
-            let seq = self.sequences.get(chrom)?;
             let start = start as usize;
-            let end = end as usize;
+            let end = (end as usize).min(seq.len());
             
-            if start >= seq.len() || end > seq.len() {
+            if start >= seq.len() {
                 return None;
             }
             
-            String::from_utf8(seq[start..end].to_vec()).ok()
+            Some(String::from_utf8_lossy(&seq[start..end]).to_string())
         }
     }
 }
@@ -367,7 +340,7 @@ fn update_info_end(info: &str, new_end: u64) -> String {
 fn convert_gvcf_record(
     view: &GvcfRecordView,
     mapper: &CoordinateMapper,
-    ref_genome: Option<&mut fasta_stub::FastaReader>,
+    ref_genome: Option<&fasta_stub::FastaReader>,
     no_comp_allele: bool,
 ) -> ConversionResult {
     // Check if this is a non-variant block (has END=)
@@ -400,11 +373,24 @@ fn convert_gvcf_record(
             // Calculate new position (1-based)
             let new_pos = target_start + 1;
             
-            // Get new REF from target reference if available
-            let new_ref = if let Some(ref_reader) = ref_genome {
+            // CrossMap GVCF behavior:
+            // - For non-variant blocks (has END=): keep original REF, don't fetch from reference
+            // - For variant records: fetch new REF from target reference genome
+            //   If fetch fails (e.g., alt contig not in reference), mark as Fail(KeyError)
+            let new_ref = if is_block {
+                // Non-variant block: keep original REF (CrossMap behavior)
+                ref_allele.to_string()
+            } else if let Some(ref_reader) = ref_genome {
+                // Variant record: get REF from target reference
                 match ref_reader.fetch(target_chrom, target_start, target_start + 1) {
-                    Some(seq) => seq.to_uppercase(),
-                    None => ref_allele.to_string(),
+                    Some(seq) if !seq.is_empty() => seq.to_uppercase(),
+                    _ => {
+                        // CrossMap behavior: fail with KeyError if can't fetch reference
+                        return ConversionResult::Failed(
+                            reconstruct_line(view),
+                            "Fail(KeyError)".to_string(),
+                        );
+                    }
                 }
             } else {
                 ref_allele.to_string()
@@ -425,25 +411,27 @@ fn convert_gvcf_record(
                             alt.to_string()
                         };
                         
-                        // Check REF == ALT filter
-                        if !no_comp_allele && updated == new_ref {
-                            // Skip this allele
-                            continue;
-                        }
                         alt_parts.push(updated);
                     } else {
                         alt_parts.push(alt.to_string());
                     }
                 }
                 
-                if alt_parts.is_empty() {
-                    // All alleles filtered out
+                // Filter out ALT alleles that equal REF (CrossMap behavior)
+                alt_parts.retain(|alt| alt != &new_ref);
+                
+                // CrossMap behavior: when alt_parts is empty after filtering,
+                // it sets fields[4] = "" (empty string), then checks if fields[3] != fields[4].
+                // Since REF != "", the record is output with empty ALT.
+                // We match this behavior exactly.
+                let alt_joined = alt_parts.join(",");
+                if !no_comp_allele && alt_joined == new_ref {
                     return ConversionResult::Failed(
                         reconstruct_line(view),
                         "Fail(REF==ALT)".to_string(),
                     );
                 }
-                alt_parts.join(",")
+                alt_joined
             } else {
                 alt_alleles_str.to_string()
             };
@@ -569,6 +557,19 @@ pub fn convert_gvcf<P: AsRef<Path>>(
     // Collect lines
     let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
     
+    // Detect chr_template from contig headers (CrossMap behavior)
+    let mut chr_template = "chr1".to_string();
+    for line in &lines {
+        if line.starts_with("##contig=") {
+            if line.contains("ID=chr") {
+                chr_template = "chr1".to_string();
+            } else {
+                chr_template = "1".to_string();
+            }
+            break;
+        }
+    }
+    
     // Process sequentially (GVCF often needs reference genome access which isn't thread-safe)
     for line in &lines {
         if line.is_empty() {
@@ -577,11 +578,52 @@ pub fn convert_gvcf<P: AsRef<Path>>(
         
         // Handle header lines
         if line.starts_with('#') {
-            if line.starts_with("##contig=") {
-                // Update contig headers
-                let updated = update_contig_header(line, mapper);
-                writeln!(output_file, "{}", updated)?;
+            // CrossMap behavior for GVCF headers
+            if line.starts_with("##fileformat")
+                || line.starts_with("##INFO")
+                || line.starts_with("##FILTER")
+                || line.starts_with("##FORMAT")
+                || line.starts_with("##ALT")
+                || line.starts_with("##SAMPLE")
+                || line.starts_with("##PEDIGREE")
+                || line.starts_with("##GVCFBlock")
+                || line.starts_with("##GATKCommandLine")
+                || line.starts_with("##source")
+            {
+                // Write to both files
+                writeln!(output_file, "{}", line)?;
+                writeln!(unmap_file, "{}", line)?;
+            } else if line.starts_with("##assembly") || line.starts_with("##contig") {
+                // Write only to unmap file (CrossMap behavior)
+                writeln!(unmap_file, "{}", line)?;
+            } else if line.starts_with("#CHROM") {
+                // Update contig information for target assembly
+                // CrossMap: only output contigs starting with 'chr'
+                for (chrom, size) in mapper.index().target_chrom_sizes() {
+                    if chr_template.starts_with("chr") {
+                        // Only output chr-prefixed contigs
+                        if chrom.starts_with("chr") {
+                            writeln!(output_file, "##contig=<ID={},length={}>", chrom, size)?;
+                        }
+                    } else {
+                        // Output without chr prefix
+                        let chrom_out = if chrom.starts_with("chr") {
+                            &chrom[3..]
+                        } else {
+                            chrom.as_str()
+                        };
+                        writeln!(output_file, "##contig=<ID={},length={}>", chrom_out, size)?;
+                    }
+                }
+                
+                // Write liftover metadata (CrossMap format)
+                writeln!(output_file, "##liftOverProgram=FastCrossMap")?;
+                
+                // Write column header to both files
+                writeln!(output_file, "{}", line)?;
+                writeln!(unmap_file, "{}", line)?;
             } else {
+                // Other header lines - write to output only
                 writeln!(output_file, "{}", line)?;
             }
             headers.fetch_add(1, Ordering::Relaxed);
@@ -593,7 +635,7 @@ pub fn convert_gvcf<P: AsRef<Path>>(
         // Parse and convert
         match GvcfRecordView::parse(line.as_bytes()) {
             Ok(view) => {
-                let result = convert_gvcf_record(&view, mapper, ref_reader.as_mut(), no_comp_allele);
+                let result = convert_gvcf_record(&view, mapper, ref_reader.as_ref(), no_comp_allele);
                 match result {
                     ConversionResult::Success(converted) => {
                         writeln!(output_file, "{}", converted)?;

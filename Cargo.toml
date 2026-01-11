@@ -1,6 +1,6 @@
 [package]
 name = "fast-crossmap"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["FastCrossMap Contributors"]
 description = "High-performance genome coordinate liftover tool"
@@ -49,6 +49,9 @@ thread_local = "1.1"
 
 # BigWig 支持
 bigtools = "0.5"
+
+# Tokio runtime (for bigtools BigWig writing)
+tokio = { version = "1", features = ["rt-multi-thread"] }
 
 # BAM/SAM/CRAM 支持 (可选，Windows 上禁用)
 rust-htslib = { version = "0.47", optional = true }

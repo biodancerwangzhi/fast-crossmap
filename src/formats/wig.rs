@@ -366,11 +366,11 @@ fn convert_wig_point(
     })
 }
 
-/// Convert a Wiggle file to bedGraph format
+/// Convert a Wiggle file to Wiggle format (variableStep)
 ///
 /// # Arguments
 /// * `input` - Input Wiggle file path
-/// * `output_prefix` - Output file prefix (will create .bgr file)
+/// * `output_prefix` - Output file prefix (will create .wig file)
 /// * `mapper` - Coordinate mapper
 ///
 /// # Returns
@@ -383,9 +383,9 @@ pub fn convert_wig<P: AsRef<Path>>(
     let input_file = std::fs::File::open(input.as_ref())?;
     let reader = BufReader::with_capacity(128 * 1024, input_file);
     
-    // Output files
-    let output_path = format!("{}.bgr", output_prefix.as_ref().display());
-    let unmap_path = format!("{}.unmap.bgr", output_prefix.as_ref().display());
+    // Output files - use .wig extension for Wiggle format
+    let output_path = format!("{}.wig", output_prefix.as_ref().display());
+    let unmap_path = format!("{}.unmap.wig", output_prefix.as_ref().display());
     
     let mut stats = ConversionStats::default();
     let mut converted_records = Vec::new();
@@ -424,21 +424,50 @@ pub fn convert_wig<P: AsRef<Path>>(
     let merged_records = merge_bedgraph_records(converted_records);
     stats.merged = original_count - merged_records.len();
     
-    // Write output with BufWriter for performance
-    let mut output_file = BufWriter::with_capacity(128 * 1024, std::fs::File::create(&output_path)?);
-    for rec in &merged_records {
-        writeln!(output_file, "{}", rec.to_line())?;
-    }
+    // Write output in Wiggle variableStep format
+    write_wiggle_file(&output_path, &merged_records)?;
     
-    // Write unmapped
+    // Write unmapped in Wiggle format
     if !unmapped_records.is_empty() {
-        let mut unmap_file = BufWriter::with_capacity(64 * 1024, std::fs::File::create(&unmap_path)?);
-        for rec in &unmapped_records {
-            writeln!(unmap_file, "{}", rec.to_line())?;
-        }
+        write_wiggle_file(&unmap_path, &unmapped_records)?;
     }
     
     Ok(stats)
+}
+
+/// Write records to a Wiggle file in variableStep format
+fn write_wiggle_file(path: &str, records: &[BedGraphRecord]) -> Result<(), std::io::Error> {
+    let mut output_file = BufWriter::with_capacity(128 * 1024, std::fs::File::create(path)?);
+    
+    // Group records by chromosome
+    let mut by_chrom: BTreeMap<String, Vec<&BedGraphRecord>> = BTreeMap::new();
+    for rec in records {
+        by_chrom.entry(rec.chrom.clone()).or_default().push(rec);
+    }
+    
+    // Write each chromosome's data
+    for (chrom, recs) in by_chrom {
+        // Determine span (use the most common span, default to 1)
+        let span = if !recs.is_empty() {
+            recs[0].end - recs[0].start
+        } else {
+            1
+        };
+        
+        // Write variableStep declaration
+        if span > 1 {
+            writeln!(output_file, "variableStep chrom={} span={}", chrom, span)?;
+        } else {
+            writeln!(output_file, "variableStep chrom={}", chrom)?;
+        }
+        
+        // Write data points (convert 0-based to 1-based)
+        for rec in recs {
+            writeln!(output_file, "{}\t{}", rec.start + 1, rec.value)?;
+        }
+    }
+    
+    Ok(())
 }
 
 /// BigWig support module
@@ -480,73 +509,68 @@ pub mod bigwig {
         Ok(points)
     }
     
-    /// Write bedGraph records to a BigWig file
-    /// 
-    /// Note: This is a simplified implementation that writes bedGraph first,
-    /// then uses external tools (bedGraphToBigWig) for conversion.
-    /// For production use, consider using bigtools CLI or bedGraphToBigWig.
-    #[allow(dead_code)]
-    pub fn write_bigwig_via_bedgraph<P: AsRef<Path>>(
+    /// Write bedGraph records directly to a BigWig file using bigtools
+    pub fn write_bigwig_direct<P: AsRef<Path>>(
         records: &[BedGraphRecord],
         output_path: P,
         chrom_sizes: &HashMap<String, u64>,
     ) -> Result<(), WigParseError> {
-        // Write bedGraph file with BufWriter for performance
-        let bgr_path = format!("{}.bgr", output_path.as_ref().display());
+        use bigtools::BigWigWrite;
+        use bigtools::beddata::BedParserStreamingIterator;
+        
+        // Create chrom sizes map for bigtools (u32)
+        let chrom_map: HashMap<String, u32> = chrom_sizes
+            .iter()
+            .map(|(k, v)| (k.clone(), *v as u32))
+            .collect();
+        
+        // Sort records by chromosome and position
+        let mut sorted_records: Vec<_> = records.iter().collect();
+        sorted_records.sort_by(|a, b| {
+            a.chrom.cmp(&b.chrom).then(a.start.cmp(&b.start))
+        });
+        
+        // Write to a temporary bedGraph file first
+        let temp_bgr_path = format!("{}.temp.bedGraph", output_path.as_ref().display());
         {
-            let mut file = BufWriter::with_capacity(128 * 1024, std::fs::File::create(&bgr_path)
+            let mut file = BufWriter::with_capacity(128 * 1024, std::fs::File::create(&temp_bgr_path)
                 .map_err(|e| WigParseError::IoError(e.to_string()))?);
-            for rec in records {
+            for rec in &sorted_records {
                 writeln!(file, "{}\t{}\t{}\t{}", rec.chrom, rec.start, rec.end, rec.value)
                     .map_err(|e| WigParseError::IoError(e.to_string()))?;
             }
         }
         
-        // Write chrom.sizes file
-        let sizes_path = format!("{}.chrom.sizes", output_path.as_ref().display());
-        {
-            let mut file = BufWriter::new(std::fs::File::create(&sizes_path)
-                .map_err(|e| WigParseError::IoError(e.to_string()))?);
-            for (chrom, size) in chrom_sizes {
-                writeln!(file, "{}\t{}", chrom, size)
-                    .map_err(|e| WigParseError::IoError(e.to_string()))?;
-            }
-        }
+        // Use bigtools to convert bedGraph to BigWig
+        let bedgraph_file = std::fs::File::open(&temp_bgr_path)
+            .map_err(|e| WigParseError::IoError(e.to_string()))?;
+        let vals = BedParserStreamingIterator::from_bedgraph_file(bedgraph_file, false);
         
-        // Try to use bedGraphToBigWig if available
-        let result = std::process::Command::new("bedGraphToBigWig")
-            .args(&[&bgr_path, &sizes_path, output_path.as_ref().to_str().unwrap()])
-            .output();
+        // Create tokio runtime for bigtools
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .build()
+            .map_err(|e| WigParseError::IoError(e.to_string()))?;
         
-        // Clean up temp files
-        let _ = std::fs::remove_file(&sizes_path);
+        // Create BigWig writer and write
+        let writer = BigWigWrite::create_file(output_path.as_ref(), chrom_map)
+            .map_err(|e| WigParseError::IoError(e.to_string()))?;
         
-        match result {
-            Ok(output) if output.status.success() => {
-                let _ = std::fs::remove_file(&bgr_path);
-                Ok(())
-            }
-            Ok(output) => {
-                Err(WigParseError::IoError(format!(
-                    "bedGraphToBigWig failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                )))
-            }
-            Err(_) => {
-                // bedGraphToBigWig not available, keep bedGraph file
-                eprintln!("Warning: bedGraphToBigWig not found, keeping bedGraph output");
-                Ok(())
-            }
-        }
+        writer.write(vals, runtime)
+            .map_err(|e| WigParseError::IoError(format!("{:?}", e)))?;
+        
+        // Clean up temp file
+        let _ = std::fs::remove_file(&temp_bgr_path);
+        
+        Ok(())
     }
     
-    /// Convert a BigWig file
+    /// Convert a BigWig file to BigWig format
     ///
     /// # Arguments
     /// * `input` - Input BigWig file path
-    /// * `output_prefix` - Output file prefix (will create .bgr and optionally .bw files)
+    /// * `output_prefix` - Output file prefix (will create .bw file)
     /// * `mapper` - Coordinate mapper
-    /// * `output_bigwig` - Whether to also write BigWig output (requires bedGraphToBigWig)
     ///
     /// # Returns
     /// Conversion statistics
@@ -554,7 +578,6 @@ pub mod bigwig {
         input: P,
         output_prefix: P,
         mapper: &CoordinateMapper,
-        output_bigwig: bool,
     ) -> Result<ConversionStats, std::io::Error> {
         // Read BigWig intervals
         let points = read_bigwig_intervals(&input)
@@ -587,29 +610,21 @@ pub mod bigwig {
         let merged_records = merge_bedgraph_records(converted_records);
         stats.merged = original_count - merged_records.len();
         
-        // Write bedGraph output with BufWriter for performance
-        let bgr_path = format!("{}.bgr", output_prefix.as_ref().display());
-        let mut output_file = BufWriter::with_capacity(128 * 1024, std::fs::File::create(&bgr_path)?);
-        for rec in &merged_records {
-            writeln!(output_file, "{}", rec.to_line())?;
+        // Write BigWig output directly
+        let bw_path = format!("{}.bw", output_prefix.as_ref().display());
+        if !merged_records.is_empty() {
+            let target_sizes = mapper.target_sizes();
+            write_bigwig_direct(&merged_records, &bw_path, target_sizes)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         }
         
-        // Write unmapped
-        let unmap_path = format!("{}.unmap.bgr", output_prefix.as_ref().display());
+        // Write unmapped in bedGraph format (BigWig can't store unmapped)
+        let unmap_path = format!("{}.unmap.bedGraph", output_prefix.as_ref().display());
         if !unmapped_records.is_empty() {
             let mut unmap_file = BufWriter::with_capacity(64 * 1024, std::fs::File::create(&unmap_path)?);
             for rec in &unmapped_records {
                 writeln!(unmap_file, "{}", rec.to_line())?;
             }
-        }
-        
-        // Optionally write BigWig output
-        if output_bigwig && !merged_records.is_empty() {
-            let bw_path = format!("{}.bw", output_prefix.as_ref().display());
-            let target_sizes = mapper.target_sizes();
-            
-            write_bigwig_via_bedgraph(&merged_records, &bw_path, target_sizes)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         }
         
         Ok(stats)

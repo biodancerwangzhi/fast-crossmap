@@ -228,79 +228,61 @@ pub mod fasta_stub {
     use std::io::{BufRead, BufReader};
     
     /// Simple FASTA reader for reference genome
+    /// Loads all sequences into memory at once for fast access
     pub struct FastaReader {
+        /// Chromosome sequences
         sequences: HashMap<String, Vec<u8>>,
-        path: std::path::PathBuf,
     }
     
     impl FastaReader {
+        /// Open a FASTA file and load all sequences into memory
         pub fn open<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
-            Ok(Self {
-                sequences: HashMap::new(),
-                path: path.as_ref().to_path_buf(),
-            })
-        }
-        
-        fn load_chrom(&mut self, chrom: &str) -> std::io::Result<()> {
-            if self.sequences.contains_key(chrom) {
-                return Ok(());
-            }
-            
-            let file = std::fs::File::open(&self.path)?;
+            let file = std::fs::File::open(path)?;
             let reader = BufReader::new(file);
-            
-            let mut current_chrom: Option<String> = None;
+            let mut sequences = HashMap::new();
+            let mut current_name = String::new();
             let mut current_seq = Vec::new();
-            let mut found = false;
             
             for line in reader.lines() {
                 let line = line?;
                 if line.starts_with('>') {
-                    if let Some(ref c) = current_chrom {
-                        if c == chrom {
-                            found = true;
-                            break;
-                        }
+                    if !current_name.is_empty() {
+                        sequences.insert(current_name.clone(), current_seq.clone());
                     }
-                    let name = line[1..].split_whitespace().next().unwrap_or("");
-                    let normalized = if name.starts_with("chr") {
-                        name.to_string()
-                    } else {
-                        format!("chr{}", name)
-                    };
-                    
-                    if normalized == chrom || name == chrom {
-                        current_chrom = Some(chrom.to_string());
-                        current_seq.clear();
-                    } else {
-                        current_chrom = None;
-                    }
-                } else if current_chrom.is_some() {
-                    current_seq.extend(line.as_bytes().iter().filter(|b| !b.is_ascii_whitespace()));
+                    current_name = line[1..].split_whitespace().next().unwrap_or("").to_string();
+                    current_seq.clear();
+                } else {
+                    current_seq.extend(line.trim().bytes());
                 }
             }
             
-            if found || current_chrom.is_some() {
-                self.sequences.insert(chrom.to_string(), current_seq);
+            if !current_name.is_empty() {
+                sequences.insert(current_name, current_seq);
             }
             
-            Ok(())
+            Ok(Self { sequences })
         }
         
-        pub fn fetch(&mut self, chrom: &str, start: u64, end: u64) -> Option<String> {
-            if !self.sequences.contains_key(chrom) {
-                self.load_chrom(chrom).ok()?;
-            }
+        /// Fetch sequence at given position (0-based, half-open)
+        pub fn fetch(&self, chrom: &str, start: u64, end: u64) -> Option<String> {
+            // Try with and without chr prefix
+            let seq = self.sequences.get(chrom)
+                .or_else(|| {
+                    if chrom.starts_with("chr") {
+                        self.sequences.get(&chrom[3..])
+                    } else {
+                        self.sequences.get(&format!("chr{}", chrom))
+                    }
+                })?;
             
-            let seq = self.sequences.get(chrom)?;
             let start = start as usize;
-            let end = end as usize;
+            let end = (end as usize).min(seq.len());
             
-            if start >= seq.len() || end > seq.len() {
+            if start >= seq.len() {
                 return None;
             }
             
-            String::from_utf8(seq[start..end].to_vec()).ok()
+            Some(String::from_utf8_lossy(&seq[start..end]).to_string())
         }
     }
 }
@@ -319,7 +301,7 @@ pub struct ConversionStats {
 fn convert_maf_record(
     view: &MafRecordView,
     mapper: &CoordinateMapper,
-    ref_genome: Option<&mut fasta_stub::FastaReader>,
+    ref_genome: Option<&fasta_stub::FastaReader>,
     target_build: &str,
 ) -> Option<String> {
     // Get coordinates (MAF uses 1-based coordinates)
@@ -327,17 +309,15 @@ fn convert_maf_record(
     let end = view.end_position().ok()?;
     let chrom = view.chromosome();
     
-    // Get query strand
-    let query_strand = view.strand().unwrap_or(Strand::Plus);
-    
     // Convert to 0-based for mapping
+    // CrossMap uses: start = int(fields[5])-1, end = int(fields[6])
     let start_0based = start - 1;
     let end_0based = end; // end is exclusive in 0-based
     
-    // Map coordinates
-    let segments = mapper.map(chrom, start_0based, end_0based, query_strand)?;
+    // Map coordinates - CrossMap always uses '+' strand for mapping
+    let segments = mapper.map(chrom, start_0based, end_0based, Strand::Plus)?;
     
-    // Require single mapping
+    // Require single mapping (len(a) == 2 in CrossMap means one mapping)
     if segments.len() != 1 {
         return None;
     }
@@ -349,27 +329,24 @@ fn convert_maf_record(
     let target_strand = seg.target.strand;
     
     // Get new reference allele from target genome if available
+    // CrossMap: fields[10] = refFasta.fetch(target_chr, target_start, target_end).upper()
+    // Then: if a[1][3] == '-': fields[10] = revcomp_DNA(fields[10], True)
     let new_ref = if let Some(ref_reader) = ref_genome {
         match ref_reader.fetch(target_chrom, seg.target.start, seg.target.end) {
             Some(seq) => {
                 let seq_upper = seq.to_uppercase();
-                // Reverse complement if target strand is negative
+                // Reverse complement if target strand is negative (matches CrossMap)
                 if target_strand == Strand::Minus {
                     dna::revcomp(&seq_upper)
                 } else {
                     seq_upper
                 }
             }
-            None => view.reference_allele().to_string(),
+            None => return None, // CrossMap fails if fetch fails
         }
     } else {
-        // No reference genome, keep original or reverse complement
-        let ref_allele = view.reference_allele();
-        if target_strand == Strand::Minus && dna::is_dna(ref_allele) {
-            dna::revcomp(ref_allele)
-        } else {
-            ref_allele.to_string()
-        }
+        // No reference genome - this shouldn't happen for MAF
+        view.reference_allele().to_string()
     };
     
     // Build output line with updated fields
@@ -387,19 +364,11 @@ fn convert_maf_record(
     // Update Reference_Allele
     output_fields[view.indices.reference_allele] = new_ref;
     
-    // Update NCBI_Build
+    // Update NCBI_Build (CrossMap: fields[3] = ref_name)
     output_fields[view.indices.ncbi_build] = target_build.to_string();
     
-    // Update Strand if target strand differs
-    if target_strand == Strand::Minus {
-        let current_strand = view.strand();
-        let new_strand = match current_strand {
-            Some(Strand::Plus) => "-",
-            Some(Strand::Minus) => "+",
-            None => ".",
-        };
-        output_fields[view.indices.strand] = new_strand.to_string();
-    }
+    // NOTE: CrossMap does NOT update the Strand field, only the Reference_Allele
+    // So we should NOT flip the strand here to match CrossMap behavior
     
     Some(output_fields.join("\t"))
 }
@@ -433,7 +402,7 @@ pub fn convert_maf<P: AsRef<Path>>(
     let mut unmap_file = BufWriter::with_capacity(64 * 1024, std::fs::File::create(&unmap_path)?);
     
     // Open reference genome if provided
-    let mut ref_reader = ref_genome
+    let ref_reader = ref_genome
         .map(|p| fasta_stub::FastaReader::open(p.as_ref()))
         .transpose()?;
     
@@ -489,7 +458,7 @@ pub fn convert_maf<P: AsRef<Path>>(
         // Parse and convert
         match MafRecordView::parse(line.as_bytes(), indices) {
             Ok(view) => {
-                if let Some(converted) = convert_maf_record(&view, mapper, ref_reader.as_mut(), target_build) {
+                if let Some(converted) = convert_maf_record(&view, mapper, ref_reader.as_ref(), target_build) {
                     writeln!(output_file, "{}", converted)?;
                     success.fetch_add(1, Ordering::Relaxed);
                 } else {

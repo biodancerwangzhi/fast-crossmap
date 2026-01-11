@@ -193,6 +193,11 @@ impl ChainIndex {
             .or_else(|| self.target_sizes.get(&format!("chr{}", chrom)).copied())
     }
     
+    /// Get all target chromosome sizes as an iterator
+    pub fn target_chrom_sizes(&self) -> impl Iterator<Item = (&String, &u64)> {
+        self.target_sizes.iter()
+    }
+    
     /// Get source chromosome size
     pub fn source_chrom_size(&self, chrom: &str) -> Option<u64> {
         self.source_sizes.get(chrom).copied()
