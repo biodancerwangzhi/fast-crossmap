@@ -40,7 +40,12 @@ Download from [Releases](https://github.com/biodancerwangzhi/fast-crossmap/relea
 # Linux (x64)
 wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-linux-x64.tar.gz
 tar -xzf fast-crossmap-linux-x64.tar.gz
+chmod +x fast-crossmap
 ./fast-crossmap --help
+
+# Optional: Add to PATH
+sudo mv fast-crossmap /usr/local/bin/
+# Or: export PATH="$PWD:$PATH"
 
 # Linux (ARM64)
 wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-linux-arm64.tar.gz
@@ -79,11 +84,16 @@ wget https://hgdownload.cse.ucsc.edu/goldenpath/hg19/liftOver/hg19ToHg38.over.ch
 # Human: hg38 → hg19
 wget https://hgdownload.cse.ucsc.edu/goldenpath/hg38/liftOver/hg38ToHg19.over.chain.gz
 
-# Mouse: mm9 → mm10
-wget https://hgdownload.cse.ucsc.edu/goldenpath/mm9/liftOver/mm9ToMm10.over.chain.gz
-
 # Mouse: mm10 → mm39
 wget https://hgdownload.cse.ucsc.edu/goldenpath/mm10/liftOver/mm10ToMm39.over.chain.gz
+```
+
+### Download Reference Genome (for VCF/GVCF/MAF)
+
+```bash
+# hg38 reference genome
+wget https://hgdownload.cse.ucsc.edu/goldenpath/hg38/bigZips/hg38.fa.gz
+gunzip hg38.fa.gz
 ```
 
 Browse all available chain files: https://hgdownload.cse.ucsc.edu/downloads.html
@@ -94,15 +104,29 @@ Browse all available chain files: https://hgdownload.cse.ucsc.edu/downloads.html
 # BED format
 fast-crossmap bed hg19ToHg38.chain.gz input.bed output.bed
 
-# BAM format
+# BAM format (Linux/macOS only)
 fast-crossmap bam hg19ToHg38.chain.gz input.bam output.bam
 
-# VCF format
-fast-crossmap vcf hg19ToHg38.chain.gz input.vcf output.vcf
+# VCF format (requires reference genome)
+fast-crossmap vcf hg19ToHg38.chain.gz input.vcf hg38.fa output.vcf
+
+# GVCF format (requires reference genome)
+fast-crossmap gvcf hg19ToHg38.chain.gz input.g.vcf hg38.fa output.g.vcf
 
 # GFF/GTF format
 fast-crossmap gff hg19ToHg38.chain.gz input.gff output.gff
+
+# MAF format (requires reference genome and build name)
+fast-crossmap maf hg19ToHg38.chain.gz input.maf hg38.fa -b hg38 output.maf
+
+# Wiggle format
+fast-crossmap wig hg19ToHg38.chain.gz input.wig output.bedGraph
+
+# BigWig format
+fast-crossmap bigwig hg19ToHg38.chain.gz input.bw output
 ```
+
+> **Note**: VCF, GVCF, and MAF formats require a reference genome FASTA file to update REF alleles at the target coordinates.
 
 ### Multi-threading
 
@@ -133,16 +157,16 @@ fast-crossmap bed hg19ToHg38.chain.gz input.bed.gz output.bed
 
 ## Supported Formats
 
-| Format | Description | Multi-threading |
-|--------|-------------|-----------------|
-| BED | BED3/BED6/BED12 | ✅ |
-| BAM/SAM/CRAM | Alignment files | ✅ |
-| VCF | Variant Call Format | ✅ |
-| GVCF | Genomic VCF | ✅ |
-| GFF/GTF | Gene annotations | ✅ |
-| Wiggle | Coverage tracks | ✅ |
-| BigWig | Binary Wiggle | ✅ |
-| MAF | Multiple Alignment Format | ✅ |
+| Format | Description | Reference Genome | Multi-threading |
+|--------|-------------|:----------------:|:---------------:|
+| BED | BED3/BED6/BED12 | - | ✅ |
+| BAM/SAM/CRAM | Alignment files | - | ✅ |
+| VCF | Variant Call Format | Required | ✅ |
+| GVCF | Genomic VCF | Required | ✅ |
+| GFF/GTF | Gene annotations | - | ✅ |
+| Wiggle | Coverage tracks | - | ✅ |
+| BigWig | Binary Wiggle | - | ✅ |
+| MAF | Mutation Annotation Format | Required | - |
 
 ## Comparison with Other Tools
 

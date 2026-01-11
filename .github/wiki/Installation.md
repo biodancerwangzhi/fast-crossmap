@@ -3,7 +3,7 @@
 ## System Requirements
 
 - **OS**: Linux, macOS, or Windows
-- **Memory**: 512 MB minimum (2 GB+ recommended)
+- **Memory**: 512 MB minimum (2 GB+ recommended for VCF/GVCF/MAF with reference genome)
 - **Note**: Windows builds do not support BAM/SAM/CRAM format
 
 ---
@@ -14,9 +14,12 @@ Download from [Releases](https://github.com/biodancerwangzhi/fast-crossmap/relea
 
 ### Linux
 ```bash
+# Download and extract
 wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-linux-x64.tar.gz
 tar -xzf fast-crossmap-linux-x64.tar.gz
 chmod +x fast-crossmap
+
+# Test
 ./fast-crossmap --version
 ```
 
@@ -25,10 +28,29 @@ chmod +x fast-crossmap
 wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-macos-arm64.tar.gz
 tar -xzf fast-crossmap-macos-arm64.tar.gz
 chmod +x fast-crossmap
+./fast-crossmap --version
 ```
 
 ### Windows
-Download `fast-crossmap-windows-x64.zip`, extract, and run `fast-crossmap.exe --version`
+1. Download `fast-crossmap-windows-x64.zip` from [Releases](https://github.com/biodancerwangzhi/fast-crossmap/releases)
+2. Extract the ZIP file
+3. Run `fast-crossmap.exe --version`
+
+### Optional: Add to PATH
+
+For frequent use, add FastCrossMap to your system PATH:
+
+```bash
+# Option 1: Move to system directory (Linux/macOS)
+sudo mv fast-crossmap /usr/local/bin/
+
+# Option 2: Add current directory to PATH (temporary)
+export PATH="$PWD:$PATH"
+
+# Option 3: Add to ~/.bashrc or ~/.zshrc (permanent)
+echo 'export PATH="/path/to/fast-crossmap:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
 
 ---
 
