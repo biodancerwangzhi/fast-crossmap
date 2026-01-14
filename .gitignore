@@ -12,11 +12,19 @@ benchmark_results/
 # =============================================================================
 # 论文相关 (大文件 - 可通过脚本下载)
 # =============================================================================
-paper/*
+# 忽略大数据文件目录
 paper/data/
 paper/results/
-paper/figures/*.png
-paper/figures/*.pdf
+paper/figures/
+
+# 但保留以下文件 (用于审稿人快速测试)
+!paper/README.md
+!paper/sample_data/
+!paper/sample_data/**
+!paper/generate_sample_data.py
+!paper/benchmark_quick.py
+!paper/*.sh
+!paper/*.py
 
 # =============================================================================
 # 参考资料 (可选 - 如果不想上传)

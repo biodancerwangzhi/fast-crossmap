@@ -197,7 +197,7 @@ If you use FastCrossMap in your research, please cite:
 
 ```bibtex
 @software{fastcrossmap,
-  title = {FastCrossMap: High-Performance Genome Coordinate Liftover},
+  title = {FastCrossMap: A High-Performance Tool for Genome Coordi-nate Liftover},
   author = {Wang, Zhi},
   year = {2026},
   url = {https://github.com/biodancerwangzhi/fast-crossmap}
