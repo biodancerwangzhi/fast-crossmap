@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-02b_benchmark_bed_multithread.py - BED 格式多线程扩展性测试
+02b_benchmark_bed_multithread.py - BED format multi-thread scalability test
 
-测试 FastCrossMap 在不同线程数下的性能
-用于生成 Figure 1(b) 的数据
+Test FastCrossMap performance with different thread counts
+Used to generate data for Figure 1(b)
 
-用法: python paper/02b_benchmark_bed_multithread.py
-输出: paper/results/benchmark_bed_multithread.json
+Usage: python paper/02b_benchmark_bed_multithread.py
+Output: paper/results/benchmark_bed_multithread.json
 """
 
 import subprocess
@@ -22,19 +22,19 @@ DATA_DIR = Path("paper/data")
 RESULTS_DIR = Path("paper/results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# 测试文件
+# Test files
 CHAIN_FILE = DATA_DIR / "hg19ToHg38.over.chain.gz"
 BED_FILE = DATA_DIR / "encode_dnase_peaks.bed.gz"
 
-# 测试线程数
+# Thread counts to test
 THREAD_COUNTS = [1, 2, 4, 8, 16]
 
-# 每个配置运行次数
+# Number of runs per configuration
 NUM_RUNS = 5
 
 
 def count_bed_records(bed_file):
-    """统计 BED 文件记录数 (支持 .gz 压缩)"""
+    """Count BED file records (supports .gz compression)"""
     import gzip
     
     count = 0
@@ -55,7 +55,7 @@ def count_bed_records(bed_file):
 
 
 def run_fastcrossmap(chain_file, input_file, output_file, threads=1):
-    """运行 FastCrossMap 并返回执行时间"""
+    """Run FastCrossMap and return execution time"""
     cmd = [
         "./fast-crossmap-linux-x64/fast-crossmap", "bed",
         "-t", str(threads),
@@ -77,46 +77,46 @@ def run_fastcrossmap(chain_file, input_file, output_file, threads=1):
 
 def main():
     print("=" * 60)
-    print("FastCrossMap BED 多线程扩展性测试")
+    print("FastCrossMap BED Multi-Thread Scalability Test")
     print("=" * 60)
     
-    # 检查文件
+    # Check files
     if not CHAIN_FILE.exists():
-        print(f"错误: Chain 文件不存在: {CHAIN_FILE}")
-        print("请先运行: bash paper/01_download_data.sh")
+        print(f"Error: Chain file not found: {CHAIN_FILE}")
+        print("Please run first: bash paper/01_download_data.sh")
         return
     
     if not BED_FILE.exists():
-        print(f"错误: BED 文件不存在: {BED_FILE}")
-        print("请先运行: bash paper/01_download_data.sh")
+        print(f"Error: BED file not found: {BED_FILE}")
+        print("Please run first: bash paper/01_download_data.sh")
         return
     
-    # 如果 BED 文件是 .gz 格式，先解压
+    # If BED file is .gz format, decompress first
     import gzip
     import shutil
     
     bed_file_to_use = BED_FILE
     if str(BED_FILE).endswith('.gz'):
-        bed_file_unzipped = Path(str(BED_FILE)[:-3])  # 去掉 .gz 后缀
+        bed_file_unzipped = Path(str(BED_FILE)[:-3])  # Remove .gz suffix
         if not bed_file_unzipped.exists():
-            print(f"解压 BED 文件: {BED_FILE} -> {bed_file_unzipped}")
+            print(f"Decompressing BED file: {BED_FILE} -> {bed_file_unzipped}")
             with gzip.open(BED_FILE, 'rb') as f_in:
                 with open(bed_file_unzipped, 'wb') as f_out:
                     shutil.copyfileobj(f_in, f_out)
         bed_file_to_use = bed_file_unzipped
     
-    # 统计记录数
+    # Count records
     num_records = count_bed_records(BED_FILE)
-    print(f"输入文件: {bed_file_to_use}")
-    print(f"记录数: {num_records:,}")
-    print(f"测试线程数: {THREAD_COUNTS}")
-    print(f"每配置运行次数: {NUM_RUNS}")
+    print(f"Input file: {bed_file_to_use}")
+    print(f"Records: {num_records:,}")
+    print(f"Thread counts: {THREAD_COUNTS}")
+    print(f"Runs per configuration: {NUM_RUNS}")
     print()
     
     results = []
     
     for threads in THREAD_COUNTS:
-        print(f"\n测试 {threads} 线程...")
+        print(f"\nTesting {threads} threads...")
         output_file = RESULTS_DIR / f"fastcrossmap_mt{threads}_output.bed"
         
         times = []
@@ -144,8 +144,8 @@ def main():
                 "success": True
             })
             
-            print(f"  平均: {avg_time:.3f}s (min: {min_time:.3f}s, max: {max_time:.3f}s)")
-            print(f"  吞吐量: {throughput:,.0f} records/sec")
+            print(f"  Average: {avg_time:.3f}s (min: {min_time:.3f}s, max: {max_time:.3f}s)")
+            print(f"  Throughput: {throughput:,.0f} records/sec")
         else:
             results.append({
                 "threads": threads,
@@ -153,20 +153,20 @@ def main():
                 "error": "All runs failed"
             })
     
-    # 计算加速比
+    # Calculate speedup
     if results and results[0]["success"]:
         baseline = results[0]["execution_time_sec"]
         print("\n" + "=" * 60)
-        print("扩展性分析")
+        print("Scalability Analysis")
         print("=" * 60)
         for r in results:
             if r["success"]:
                 speedup = baseline / r["execution_time_sec"]
                 efficiency = speedup / r["threads"] * 100
                 print(f"{r['threads']}T: {r['execution_time_sec']:.3f}s, "
-                      f"加速比: {speedup:.2f}x, 效率: {efficiency:.1f}%")
+                      f"Speedup: {speedup:.2f}x, Efficiency: {efficiency:.1f}%")
     
-    # 保存结果
+    # Save results
     output_data = {
         "timestamp": datetime.now().isoformat(),
         "format": "BED",
@@ -181,8 +181,8 @@ def main():
     with open(output_file, 'w') as f:
         json.dump(output_data, f, indent=2)
     
-    print(f"\n结果已保存到: {output_file}")
-    print("\n下一步: python paper/04_plot_performance.py")
+    print(f"\nResults saved to: {output_file}")
+    print("\nNext step: python paper/04_plot_performance.py")
 
 
 if __name__ == "__main__":

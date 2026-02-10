@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-09_feature_audit.py - 功能审计
+09_feature_audit.py - Feature audit
 
-检测各工具的功能支持情况，生成功能对比矩阵
+Detect feature support for each tool, generate feature comparison matrix
 
-检测项目：
-1. 文件格式支持 (BED, BAM, VCF, GFF, etc.)
-2. 压缩文件支持 (gzip chain, gzip input)
-3. 多线程支持
-4. 输出未映射记录
-5. 命令行易用性
+Detection items:
+1. File format support (BED, BAM, VCF, GFF, etc.)
+2. Compressed file support (gzip chain, gzip input)
+3. Multi-threading support
+4. Unmapped record output
+5. Command-line usability
 
-原理：
-- 基于工具文档和实际测试结果
-- 生成功能矩阵用于热力图可视化
-- 计算 Feature Coverage Score
+Methodology:
+- Based on tool documentation and actual test results
+- Generate feature matrix for heatmap visualization
+- Calculate Feature Coverage Score
 
-用法: python paper/09_feature_audit.py
-输出: paper/results/features.json
+Usage: python paper/09_feature_audit.py
+Output: paper/results/features.json
 """
 
 import json
@@ -35,10 +35,10 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 @dataclass
 class FeatureMatrix:
-    """功能矩阵"""
+    """Feature matrix"""
     tool: str
     
-    # 文件格式支持 (8 种)
+    # File format support (8 types)
     format_bed: bool
     format_bam: bool
     format_vcf: bool
@@ -48,36 +48,36 @@ class FeatureMatrix:
     format_maf: bool
     format_gvcf: bool
     
-    # 压缩文件支持
-    compressed_chain: bool      # 支持 .gz chain 文件
-    compressed_input: bool      # 支持 .gz 输入文件
+    # Compressed file support
+    compressed_chain: bool      # Supports .gz chain files
+    compressed_input: bool      # Supports .gz input files
     
-    # 多线程支持
-    multithreading: bool        # 支持多线程
-    user_controllable_threads: bool  # 用户可控制线程数
+    # Multi-threading support
+    multithreading: bool        # Supports multi-threading
+    user_controllable_threads: bool  # User can control thread count
     
-    # 跨平台支持
-    platform_linux: bool        # Linux 支持
-    platform_macos: bool        # macOS 支持
-    platform_windows: bool      # Windows 支持
+    # Cross-platform support
+    platform_linux: bool        # Linux support
+    platform_macos: bool        # macOS support
+    platform_windows: bool      # Windows support
     
-    # 其他功能
-    unmapped_output: bool       # 输出未映射记录
-    streaming_processing: bool  # 流式处理（低内存）
-    cli_simplicity: int         # 命令行简洁度 (1-5, 5最简洁)
+    # Other features
+    unmapped_output: bool       # Outputs unmapped records
+    streaming_processing: bool  # Streaming processing (low memory)
+    cli_simplicity: int         # CLI simplicity (1-5, 5 = simplest)
     
-    # 统计
-    format_count: int           # 支持的格式数
-    platform_count: int         # 支持的平台数
-    feature_coverage_score: float  # 功能覆盖率 (0-1)
+    # Statistics
+    format_count: int           # Number of supported formats
+    platform_count: int         # Number of supported platforms
+    feature_coverage_score: float  # Feature coverage score (0-1)
 
 
 def audit_fastcrossmap() -> FeatureMatrix:
-    """审计 FastCrossMap 功能"""
+    """Audit FastCrossMap features"""
     return FeatureMatrix(
         tool="FastCrossMap",
         
-        # 文件格式支持 (8/8)
+        # File format support (8/8)
         format_bed=True,
         format_bam=True,
         format_vcf=True,
@@ -87,25 +87,25 @@ def audit_fastcrossmap() -> FeatureMatrix:
         format_maf=True,
         format_gvcf=True,
         
-        # 压缩文件支持
-        compressed_chain=True,      # 支持 .gz chain
-        compressed_input=True,      # 支持 .gz 输入 (通过 flate2)
+        # Compressed file support
+        compressed_chain=True,      # Supports .gz chain
+        compressed_input=True,      # Supports .gz input (via flate2)
         
-        # 多线程支持
-        multithreading=True,        # 支持多线程
-        user_controllable_threads=True,  # -t 参数控制
+        # Multi-threading support
+        multithreading=True,        # Supports multi-threading
+        user_controllable_threads=True,  # -t parameter
         
-        # 跨平台支持 (3/3)
-        platform_linux=True,        # Rust 原生支持
-        platform_macos=True,        # Rust 原生支持
-        platform_windows=True,      # Rust 原生支持
+        # Cross-platform support (3/3)
+        platform_linux=True,        # Rust native support
+        platform_macos=True,        # Rust native support
+        platform_windows=True,      # Rust native support
         
-        # 其他功能
-        unmapped_output=True,       # 自动生成 .unmap 文件
-        streaming_processing=True,  # 流式处理，低内存
-        cli_simplicity=5,           # 命令简洁: fast-crossmap bed chain.gz input.bed output.bed
+        # Other features
+        unmapped_output=True,       # Auto-generates .unmap file
+        streaming_processing=True,  # Streaming, low memory
+        cli_simplicity=5,           # Simple: fast-crossmap bed chain.gz input.bed output.bed
         
-        # 统计
+        # Statistics
         format_count=8,
         platform_count=3,
         feature_coverage_score=0.0  # 稍后计算
@@ -113,11 +113,11 @@ def audit_fastcrossmap() -> FeatureMatrix:
 
 
 def audit_crossmap() -> FeatureMatrix:
-    """审计 CrossMap 功能"""
+    """Audit CrossMap features"""
     return FeatureMatrix(
         tool="CrossMap",
         
-        # 文件格式支持 (8/8)
+        # File format support (8/8)
         format_bed=True,
         format_bam=True,
         format_vcf=True,
@@ -127,25 +127,25 @@ def audit_crossmap() -> FeatureMatrix:
         format_maf=True,
         format_gvcf=True,
         
-        # 压缩文件支持
-        compressed_chain=True,      # 支持 .gz chain
-        compressed_input=True,      # 支持 .gz 输入
+        # Compressed file support
+        compressed_chain=True,      # Supports .gz chain
+        compressed_input=True,      # Supports .gz input
         
-        # 多线程支持
-        multithreading=False,       # 单线程
+        # Multi-threading support
+        multithreading=False,       # Single-threaded
         user_controllable_threads=False,
         
-        # 跨平台支持 (2.5/3)
-        platform_linux=True,        # Python 原生支持
-        platform_macos=True,        # Python 原生支持
-        platform_windows=False,     # Windows 需要 WSL，不算完全支持
+        # Cross-platform support (2.5/3)
+        platform_linux=True,        # Python native support
+        platform_macos=True,        # Python native support
+        platform_windows=False,     # Windows requires WSL, not fully supported
         
-        # 其他功能
-        unmapped_output=True,       # 生成 .unmap 文件
-        streaming_processing=False, # Python 实现，内存占用较高
-        cli_simplicity=4,           # 命令: CrossMap bed chain.gz input.bed output.bed
+        # Other features
+        unmapped_output=True,       # Generates .unmap file
+        streaming_processing=False, # Python implementation, higher memory usage
+        cli_simplicity=4,           # Command: CrossMap bed chain.gz input.bed output.bed
         
-        # 统计
+        # Statistics
         format_count=8,
         platform_count=2,
         feature_coverage_score=0.0
@@ -153,11 +153,11 @@ def audit_crossmap() -> FeatureMatrix:
 
 
 def audit_liftover() -> FeatureMatrix:
-    """审计 liftOver 功能"""
+    """Audit liftOver features"""
     return FeatureMatrix(
         tool="liftOver",
         
-        # 文件格式支持 (2/8) - 只支持 BED 和 GFF
+        # File format support (2/8) - only BED and GFF
         format_bed=True,
         format_bam=False,
         format_vcf=False,
@@ -167,25 +167,25 @@ def audit_liftover() -> FeatureMatrix:
         format_maf=False,
         format_gvcf=False,
         
-        # 压缩文件支持
-        compressed_chain=True,      # 支持 .gz chain
-        compressed_input=False,     # 不支持 .gz 输入
+        # Compressed file support
+        compressed_chain=True,      # Supports .gz chain
+        compressed_input=False,     # No .gz input support
         
-        # 多线程支持
-        multithreading=False,       # 单线程
+        # Multi-threading support
+        multithreading=False,       # Single-threaded
         user_controllable_threads=False,
         
-        # 跨平台支持 (2/3)
-        platform_linux=True,        # C 程序，Linux 原生
-        platform_macos=True,        # macOS 原生
-        platform_windows=False,     # Windows 不支持
+        # Cross-platform support (2/3)
+        platform_linux=True,        # C program, Linux native
+        platform_macos=True,        # macOS native
+        platform_windows=False,     # Windows not supported
         
-        # 其他功能
-        unmapped_output=True,       # 需要指定 unmap 文件
-        streaming_processing=True,  # C 实现，流式处理
-        cli_simplicity=3,           # 命令: liftOver input.bed chain.gz output.bed unmap.bed
+        # Other features
+        unmapped_output=True,       # Requires specifying unmap file
+        streaming_processing=True,  # C implementation, streaming
+        cli_simplicity=3,           # Command: liftOver input.bed chain.gz output.bed unmap.bed
         
-        # 统计
+        # Statistics
         format_count=2,
         platform_count=2,
         feature_coverage_score=0.0
@@ -193,11 +193,11 @@ def audit_liftover() -> FeatureMatrix:
 
 
 def audit_fastremap() -> FeatureMatrix:
-    """审计 FastRemap 功能"""
+    """Audit FastRemap features"""
     return FeatureMatrix(
         tool="FastRemap",
         
-        # 文件格式支持 (2/8) - 只支持 BED 和 BAM
+        # File format support (2/8) - only BED and BAM
         format_bed=True,
         format_bam=True,
         format_vcf=False,
@@ -207,25 +207,25 @@ def audit_fastremap() -> FeatureMatrix:
         format_maf=False,
         format_gvcf=False,
         
-        # 压缩文件支持
-        compressed_chain=False,     # 不支持 .gz chain (致命缺陷)
-        compressed_input=False,     # 不支持 .gz 输入
+        # Compressed file support
+        compressed_chain=False,     # No .gz chain support (critical flaw)
+        compressed_input=False,     # No .gz input support
         
-        # 多线程支持
-        multithreading=True,        # 内部使用 4 线程
-        user_controllable_threads=False,  # 用户无法控制线程数
+        # Multi-threading support
+        multithreading=True,        # Internal 4 threads
+        user_controllable_threads=False,  # User cannot control thread count
         
-        # 跨平台支持 (2/3)
+        # Cross-platform support (2/3)
         platform_linux=True,        # C++ SeqAn2
-        platform_macos=True,        # macOS 支持
-        platform_windows=False,     # Windows 编译困难
+        platform_macos=True,        # macOS support
+        platform_windows=False,     # Windows compilation difficult
         
-        # 其他功能
-        unmapped_output=True,       # -u 参数指定
-        streaming_processing=True,  # C++ 实现
-        cli_simplicity=2,           # 命令复杂: FastRemap -f bed -c chain -i input -o output -u unmap
+        # Other features
+        unmapped_output=True,       # -u parameter
+        streaming_processing=True,  # C++ implementation
+        cli_simplicity=2,           # Complex: FastRemap -f bed -c chain -i input -o output -u unmap
         
-        # 统计
+        # Statistics
         format_count=2,
         platform_count=2,
         feature_coverage_score=0.0
@@ -234,16 +234,16 @@ def audit_fastremap() -> FeatureMatrix:
 
 def calculate_feature_score(matrix: FeatureMatrix) -> float:
     """
-    计算功能覆盖率分数 (0-1)
+    Calculate feature coverage score (0-1).
     
-    权重分配:
-    - 文件格式支持: 35% (8 种格式)
-    - 压缩文件支持: 15% (2 项)
-    - 多线程支持: 15% (2 项)
-    - 跨平台支持: 15% (3 个平台)
-    - 其他功能: 20% (3 项)
+    Weight allocation:
+    - File format support: 35% (8 formats)
+    - Compressed file support: 15% (2 items)
+    - Multi-threading support: 15% (2 items)
+    - Cross-platform support: 15% (3 platforms)
+    - Other features: 20% (3 items)
     """
-    # 文件格式支持 (8 种，每种 4.375%)
+    # File format support (8 types, each 4.375%)
     format_score = sum([
         matrix.format_bed,
         matrix.format_bam,
@@ -255,26 +255,26 @@ def calculate_feature_score(matrix: FeatureMatrix) -> float:
         matrix.format_gvcf
     ]) / 8 * 0.35
     
-    # 压缩文件支持 (2 项，每项 7.5%)
+    # Compressed file support (2 items, each 7.5%)
     compression_score = sum([
         matrix.compressed_chain,
         matrix.compressed_input
     ]) / 2 * 0.15
     
-    # 多线程支持 (2 项，每项 7.5%)
+    # Multi-threading support (2 items, each 7.5%)
     threading_score = sum([
         matrix.multithreading,
         matrix.user_controllable_threads
     ]) / 2 * 0.15
     
-    # 跨平台支持 (3 个平台，每个 5%)
+    # Cross-platform support (3 platforms, each 5%)
     platform_score = sum([
         matrix.platform_linux,
         matrix.platform_macos,
         matrix.platform_windows
     ]) / 3 * 0.15
     
-    # 其他功能 (3 项)
+    # Other features (3 items)
     other_score = (
         (1 if matrix.unmapped_output else 0) * 0.07 +
         (1 if matrix.streaming_processing else 0) * 0.07 +
@@ -287,10 +287,10 @@ def calculate_feature_score(matrix: FeatureMatrix) -> float:
 
 def main():
     print("=" * 60)
-    print("功能审计")
+    print("Feature Audit")
     print("=" * 60)
     
-    # 审计各工具
+    # Audit each tool
     tools = [
         audit_fastcrossmap(),
         audit_crossmap(),
@@ -298,15 +298,15 @@ def main():
         audit_fastremap()
     ]
     
-    # 计算功能覆盖率分数
+    # Calculate feature coverage scores
     for tool in tools:
         tool.feature_coverage_score = calculate_feature_score(tool)
     
-    # 打印摘要
+    # Print summary
     print("\n" + "=" * 60)
-    print("功能审计摘要")
+    print("Feature Audit Summary")
     print("=" * 60)
-    print(f"{'工具':<15} {'格式':<8} {'压缩':<6} {'多线程':<8} {'平台':<8} {'覆盖率':<10}")
+    print(f"{'Tool':<15} {'Formats':<8} {'Compress':<6} {'Threads':<8} {'Platform':<8} {'Coverage':<10}")
     print("-" * 60)
     
     for tool in tools:
@@ -315,9 +315,9 @@ def main():
         print(f"{tool.tool:<15} {tool.format_count}/8{'':<4} {compressed_chain:<6} "
               f"{multithreading:<8} {tool.platform_count}/3{'':<4} {tool.feature_coverage_score*100:.1f}%")
     
-    # 详细功能矩阵
+    # Detailed feature matrix
     print("\n" + "=" * 60)
-    print("详细功能矩阵")
+    print("Detailed Feature Matrix")
     print("=" * 60)
     
     features = [
@@ -329,25 +329,25 @@ def main():
         ("BigWig", "format_bigwig"),
         ("MAF", "format_maf"),
         ("GVCF", "format_gvcf"),
-        ("压缩 Chain", "compressed_chain"),
-        ("压缩输入", "compressed_input"),
-        ("多线程", "multithreading"),
-        ("可控线程数", "user_controllable_threads"),
-        ("Linux 支持", "platform_linux"),
-        ("macOS 支持", "platform_macos"),
-        ("Windows 支持", "platform_windows"),
-        ("未映射输出", "unmapped_output"),
-        ("流式处理", "streaming_processing"),
+        ("Compressed Chain", "compressed_chain"),
+        ("Compressed Input", "compressed_input"),
+        ("Multi-threading", "multithreading"),
+        ("Controllable Threads", "user_controllable_threads"),
+        ("Linux Support", "platform_linux"),
+        ("macOS Support", "platform_macos"),
+        ("Windows Support", "platform_windows"),
+        ("Unmapped Output", "unmapped_output"),
+        ("Streaming Processing", "streaming_processing"),
     ]
     
-    # 打印表头
-    print(f"{'功能':<20}", end="")
+    # Print header
+    print(f"{'Feature':<20}", end="")
     for tool in tools:
         print(f"{tool.tool:<15}", end="")
     print()
     print("-" * 80)
     
-    # 打印每个功能
+    # Print each feature
     for feature_name, feature_attr in features:
         print(f"{feature_name:<20}", end="")
         for tool in tools:
@@ -356,7 +356,7 @@ def main():
             print(f"{symbol:<15}", end="")
         print()
     
-    # 保存结果
+    # Save results
     output_json = RESULTS_DIR / "features.json"
     with open(output_json, 'w') as f:
         json.dump({
@@ -371,8 +371,8 @@ def main():
             }
         }, f, indent=2)
     
-    print(f"\n结果已保存到: {output_json}")
-    print("\n下一步: python paper/10_plot_features.py")
+    print(f"\nResults saved to: {output_json}")
+    print("\nNext step: python paper/10_plot_features.py")
 
 
 if __name__ == "__main__":

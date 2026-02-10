@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-02_benchmark_bed.py - BED 格式基准测试
+02_benchmark_bed.py - BED format benchmark
 
-运行 4-way 基准测试: FastCrossMap, CrossMap, liftOver, FastRemap
-测量执行时间、吞吐量、内存占用
+Run 4-way benchmark: FastCrossMap, CrossMap, liftOver, FastRemap
+Measure execution time, throughput, memory usage
 
-用法: python paper/02_benchmark_bed.py
-输出: paper/results/benchmark_bed.json
+Usage: python paper/02_benchmark_bed.py
+Output: paper/results/benchmark_bed.json
 """
 
 import json
@@ -25,20 +25,20 @@ DATA_DIR = Path("paper/data")
 RESULTS_DIR = Path("paper/results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# 输入文件
+# Input files
 CHAIN_FILE = DATA_DIR / "hg19ToHg38.over.chain.gz"
 BED_FILE = DATA_DIR / "encode_dnase_peaks.bed.gz"
 
-# 解压的 chain 文件 (FastRemap 需要)
+# Uncompressed chain file (required by FastRemap)
 CHAIN_FILE_UNZIPPED = DATA_DIR / "hg19ToHg38.over.chain"
 
-# 重复次数
+# Number of runs
 NUM_RUNS = 5
 
 
 @dataclass
 class BenchmarkResult:
-    """基准测试结果"""
+    """Benchmark result"""
     tool: str
     format: str
     input_file: str
@@ -54,7 +54,7 @@ class BenchmarkResult:
 
 
 def count_bed_records(bed_file: Path) -> int:
-    """统计 BED 文件记录数 (支持 .gz 压缩)"""
+    """Count BED file records (supports .gz compression)"""
     import gzip
     
     count = 0
@@ -73,7 +73,7 @@ def count_bed_records(bed_file: Path) -> int:
 
 
 def count_output_records(output_file: Path) -> tuple[int, int]:
-    """统计输出文件的 mapped 和 unmapped 记录数"""
+    """Count mapped and unmapped records in output file"""
     mapped = 0
     unmapped = 0
     
@@ -95,27 +95,27 @@ def count_output_records(output_file: Path) -> tuple[int, int]:
 
 def run_with_time(cmd: list[str], output_file: Path) -> tuple[float, float, bool, str]:
     """
-    运行命令并测量时间和内存
-    返回: (执行时间秒, 峰值内存MB, 是否成功, 错误信息)
+    Run command and measure time and memory.
+    Returns: (execution_time_sec, peak_memory_mb, success, error_message)
     """
     import resource
     import os
     
     start_time = time.time()
     try:
-        # 直接运行命令，使用 Python time 测量
+        # Run command directly, measure with Python time
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=600  # 10 分钟超时
+            timeout=600  # 10 minute timeout
         )
         elapsed = time.time() - start_time
         
-        # 尝试使用 /usr/bin/time 获取内存，如果失败则使用 0
+        # Try to get memory usage via /usr/bin/time, fallback to 0
         peak_memory_mb = 0
         try:
-            # 尝试用 time -v 重新运行一次获取内存
+            # Try running with time -v to get memory info
             time_result = subprocess.run(
                 ["/usr/bin/time", "-v"] + cmd,
                 capture_output=True,
@@ -128,10 +128,10 @@ def run_with_time(cmd: list[str], output_file: Path) -> tuple[float, float, bool
                     peak_memory_mb = peak_memory_kb / 1024
                     break
         except:
-            # 如果 /usr/bin/time 不可用，尝试使用 psutil 或设为 0
+            # If /usr/bin/time is unavailable, try psutil or set to 0
             try:
                 import psutil
-                # 粗略估计：使用当前进程的内存作为参考
+                # Rough estimate: use current process memory as reference
                 peak_memory_mb = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
             except:
                 peak_memory_mb = 0
@@ -148,11 +148,11 @@ def run_with_time(cmd: list[str], output_file: Path) -> tuple[float, float, bool
 
 
 def benchmark_fastcrossmap(bed_file: Path, chain_file: Path, output_dir: Path) -> BenchmarkResult:
-    """测试 FastCrossMap"""
+    """Benchmark FastCrossMap"""
     print("  Running FastCrossMap...")
     output_file = output_dir / "fastcrossmap_output.bed"
     
-    # FastCrossMap 使用位置参数: fast-crossmap bed <CHAIN> <INPUT> [OUTPUT]
+    # FastCrossMap uses positional args: fast-crossmap bed <CHAIN> <INPUT> [OUTPUT]
     cmd = [
         "./fast-crossmap-linux-x64/fast-crossmap",
         "bed",
@@ -212,7 +212,7 @@ def benchmark_fastcrossmap(bed_file: Path, chain_file: Path, output_dir: Path) -
 
 
 def benchmark_crossmap(bed_file: Path, chain_file: Path, output_dir: Path) -> BenchmarkResult:
-    """测试 CrossMap"""
+    """Benchmark CrossMap"""
     print("  Running CrossMap...")
     output_file = output_dir / "crossmap_output.bed"
     
@@ -274,18 +274,18 @@ def benchmark_crossmap(bed_file: Path, chain_file: Path, output_dir: Path) -> Be
 
 
 def benchmark_liftover(bed_file: Path, chain_file: Path, output_dir: Path) -> BenchmarkResult:
-    """测试 UCSC liftOver"""
+    """Benchmark UCSC liftOver"""
     print("  Running liftOver...")
     output_file = output_dir / "liftover_output.bed"
     unmap_file = output_dir / "liftover_output.bed.unmap"
     
-    # liftOver 对 BED 格式要求严格，narrowPeak 格式第 7 列是浮点数会报错
-    # 需要先转换为标准 BED6 格式
+    # liftOver has strict BED format requirements; narrowPeak format column 7 float values cause errors
+    # Need to convert to standard BED6 format first
     import gzip
     
     bed6_file = output_dir / "input_bed6.bed"
     
-    # 根据文件扩展名选择打开方式
+    # Choose open method based on file extension
     if str(bed_file).endswith('.gz'):
         fin = gzip.open(bed_file, 'rt')
     else:
@@ -298,8 +298,8 @@ def benchmark_liftover(bed_file: Path, chain_file: Path, output_dir: Path) -> Be
                     continue
                 fields = line.strip().split('\t')
                 if len(fields) >= 6:
-                    # 只取前 6 列: chrom, start, end, name, score, strand
-                    # 如果 score 是浮点数，转为整数
+                    # Take only first 6 columns: chrom, start, end, name, score, strand
+                    # Convert float score to integer
                     try:
                         score = int(float(fields[4])) if len(fields) > 4 else 0
                     except:
@@ -307,7 +307,7 @@ def benchmark_liftover(bed_file: Path, chain_file: Path, output_dir: Path) -> Be
                     strand = fields[5] if len(fields) > 5 else '.'
                     fout.write(f"{fields[0]}\t{fields[1]}\t{fields[2]}\t{fields[3]}\t{score}\t{strand}\n")
                 elif len(fields) >= 3:
-                    # 最少 3 列
+                    # Minimum 3 columns
                     fout.write(f"{fields[0]}\t{fields[1]}\t{fields[2]}\t.\t0\t.\n")
     finally:
         fin.close()
@@ -371,15 +371,15 @@ def benchmark_liftover(bed_file: Path, chain_file: Path, output_dir: Path) -> Be
 
 
 def benchmark_fastremap(bed_file: Path, chain_file: Path, output_dir: Path) -> BenchmarkResult:
-    """测试 FastRemap"""
+    """Benchmark FastRemap"""
     print("  Running FastRemap...")
     output_file = output_dir / "fastremap_output.bed"
     unmap_file = output_dir / "fastremap_output.bed.unmap"
     
-    # FastRemap 不支持 .gz，需要解压的 chain 文件
+    # FastRemap does not support .gz, needs uncompressed chain file
     chain_unzipped = CHAIN_FILE_UNZIPPED
     if not chain_unzipped.exists():
-        print("    解压 chain 文件供 FastRemap 使用...")
+        print("    Decompressing chain file for FastRemap...")
         subprocess.run(["gunzip", "-k", str(chain_file)], check=True)
     
     cmd = [
@@ -443,46 +443,46 @@ def benchmark_fastremap(bed_file: Path, chain_file: Path, output_dir: Path) -> B
 
 def main():
     print("=" * 60)
-    print("BED 格式基准测试")
+    print("BED Format Benchmark")
     print("=" * 60)
     
-    # 检查输入文件
+    # Check input files
     if not BED_FILE.exists():
-        print(f"错误: BED 文件不存在: {BED_FILE}")
-        print("请先运行: bash paper/01_download_data.sh")
+        print(f"Error: BED file not found: {BED_FILE}")
+        print("Please run first: bash paper/01_download_data.sh")
         return
     
     if not CHAIN_FILE.exists():
-        print(f"错误: Chain 文件不存在: {CHAIN_FILE}")
-        print("请先运行: bash paper/01_download_data.sh")
+        print(f"Error: Chain file not found: {CHAIN_FILE}")
+        print("Please run first: bash paper/01_download_data.sh")
         return
     
-    # 如果 BED 文件是 .gz 格式，先解压
+    # If BED file is .gz format, decompress first
     import gzip
     import shutil
     
     bed_file_to_use = BED_FILE
     if str(BED_FILE).endswith('.gz'):
-        bed_file_unzipped = Path(str(BED_FILE)[:-3])  # 去掉 .gz 后缀
+        bed_file_unzipped = Path(str(BED_FILE)[:-3])  # Remove .gz suffix
         if not bed_file_unzipped.exists():
-            print(f"解压 BED 文件: {BED_FILE} -> {bed_file_unzipped}")
+            print(f"Decompressing BED file: {BED_FILE} -> {bed_file_unzipped}")
             with gzip.open(BED_FILE, 'rb') as f_in:
                 with open(bed_file_unzipped, 'wb') as f_out:
                     shutil.copyfileobj(f_in, f_out)
         bed_file_to_use = bed_file_unzipped
     
-    # 统计输入记录数
+    # Count input records
     input_records = count_bed_records(BED_FILE)
-    print(f"\n输入文件: {bed_file_to_use}")
-    print(f"记录数: {input_records:,}")
-    print(f"重复次数: {NUM_RUNS}")
+    print(f"\nInput file: {bed_file_to_use}")
+    print(f"Records: {input_records:,}")
+    print(f"Number of runs: {NUM_RUNS}")
     print()
     
-    # 创建输出目录
+    # Create output directory
     output_dir = RESULTS_DIR / "bed_benchmark"
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # 运行基准测试 (使用解压后的文件)
+    # Run benchmarks (using decompressed file)
     results = []
     
     print("[1/4] FastCrossMap")
@@ -497,7 +497,7 @@ def main():
     print("[4/4] FastRemap")
     results.append(benchmark_fastremap(bed_file_to_use, CHAIN_FILE, output_dir))
     
-    # 保存结果
+    # Save results
     output_json = RESULTS_DIR / "benchmark_bed.json"
     with open(output_json, 'w') as f:
         json.dump({
@@ -508,20 +508,20 @@ def main():
             "results": [asdict(r) for r in results]
         }, f, indent=2)
     
-    print(f"\n结果已保存到: {output_json}")
+    print(f"\nResults saved to: {output_json}")
     
-    # 打印摘要
+    # Print summary
     print("\n" + "=" * 60)
-    print("基准测试结果摘要")
+    print("Benchmark Results Summary")
     print("=" * 60)
-    print(f"{'工具':<15} {'时间(s)':<10} {'吞吐量(rec/s)':<15} {'内存(MB)':<10} {'状态':<10}")
+    print(f"{'Tool':<15} {'Time(s)':<10} {'Throughput(rec/s)':<15} {'Memory(MB)':<10} {'Status':<10}")
     print("-" * 60)
     
     for r in results:
         status = "✓" if r.success else "✗"
         print(f"{r.tool:<15} {r.execution_time_sec:<10.3f} {r.throughput_rec_per_sec:<15,.0f} {r.peak_memory_mb:<10.1f} {status:<10}")
     
-    print("\n下一步: python paper/03_benchmark_bam.py")
+    print("\nNext step: python paper/03_benchmark_bam.py")
 
 
 if __name__ == "__main__":

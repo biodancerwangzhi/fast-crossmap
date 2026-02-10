@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-06_plot_memory.py - 生成内存效率对比图 (Figure 2)
+06_plot_memory.py - Generate memory efficiency comparison figure (Figure 2)
 
-Figure 2 设计 (1x2 布局):
-  左图: 内存使用曲线 - 展示三个工具随时间的内存变化
-  右图: 峰值内存对比 - 条形图展示峰值内存对比
+Figure 2 layout (1x2):
+  Left: Memory usage curves - showing memory changes over time for three tools
+  Right: Peak memory comparison - bar chart showing peak memory comparison
 
-设计理念:
-- 左图展示内存使用的动态变化，体现 FastCrossMap 的流式处理优势
-- 右图展示峰值内存的直接对比，便于量化比较
-- 使用与 Figure 1 一致的配色方案
+Design rationale:
+- Left plot shows dynamic memory usage changes, highlighting FastCrossMap's streaming advantage
+- Right plot shows direct peak memory comparison for quantitative comparison
+- Uses color scheme consistent with Figure 1
 
-用法: python paper/06_plot_memory.py
-输出: paper/figures/fig2_memory.pdf
+Usage: python paper/06_plot_memory.py
+Output: paper/figures/fig2_memory.pdf
 """
 
 import json
@@ -27,19 +27,19 @@ RESULTS_DIR = Path("paper/results")
 FIGURES_DIR = Path("paper/figures")
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
-# 工具颜色 (与 Figure 1 保持一致)
+# Tool colors (consistent with Figure 1)
 COLORS = {
-    "FastCrossMap": "#1f77b4",  # 蓝色
-    "CrossMap": "#ff7f0e",       # 橙色
-    "FastRemap": "#d62728"       # 红色
+    "FastCrossMap": "#1f77b4",  # Blue
+    "CrossMap": "#ff7f0e",       # Orange
+    "FastRemap": "#d62728"       # Red
 }
 
-# 工具顺序
+# Tool order
 TOOL_ORDER = ["FastCrossMap", "CrossMap", "FastRemap"]
 
 
 def load_memory_data():
-    """加载内存采样数据"""
+    """Load memory profiling data"""
     memory_file = RESULTS_DIR / "memory_profile.json"
     if not memory_file.exists():
         return None
@@ -64,7 +64,7 @@ def plot_memory_curves(data, ax):
     
     results = {r["tool"]: r for r in data["results"]}
     
-    # 绘制每个工具的内存曲线
+    # Plot each tool's memory curve
     for tool in TOOL_ORDER:
         if tool in results and results[tool]["success"]:
             r = results[tool]
@@ -101,7 +101,7 @@ def plot_peak_memory_comparison(data, ax):
     
     results = {r["tool"]: r for r in data["results"]}
     
-    # 准备数据
+    # Prepare data
     tools = []
     peak_memories = []
     
@@ -117,10 +117,10 @@ def plot_peak_memory_comparison(data, ax):
     
     colors = [COLORS[t] for t in tools]
     
-    # 绘制条形图
+    # Plot bar chart
     bars = ax.bar(range(len(tools)), peak_memories, color=colors, alpha=0.7, edgecolor='black')
     
-    # 在条形图上方添加数值标签
+    # Add value labels above bars
     for i, (bar, mem) in enumerate(zip(bars, peak_memories)):
         height = bar.get_height()
         ax.text(bar.get_x() + bar.get_width()/2., height,
@@ -131,8 +131,8 @@ def plot_peak_memory_comparison(data, ax):
     ax.set_title('Peak Memory Comparison', fontsize=11, fontweight='bold')
     ax.set_xticks(range(len(tools)))
     
-    # 构建 x 轴标签，FastCrossMap 用红色突出
-    ax.set_xticklabels([])  # 先清空
+    # Build x-axis labels, highlight FastCrossMap in red
+    ax.set_xticklabels([])  # Clear first
     
     for i, tool in enumerate(tools):
         if tool == "FastCrossMap":
@@ -144,55 +144,55 @@ def plot_peak_memory_comparison(data, ax):
                     transform=ax.get_xaxis_transform(), fontsize=9, 
                     color='black')
     
-    # 添加网格线
+    # Add grid lines
     ax.grid(True, alpha=0.3, linestyle='--', axis='y')
 
 
 def main():
     print("=" * 60)
-    print("生成内存效率对比图 (Figure 2)")
+    print("Generating Memory Efficiency Comparison Figure (Figure 2)")
     print("=" * 60)
     
-    # 加载数据
+    # Load data
     memory_data = load_memory_data()
     
     if not memory_data:
-        print("错误: 没有找到内存采样数据")
-        print("请先运行: python paper/05_memory_profile.py")
+        print("Error: No memory profiling data found")
+        print("Please run first: python paper/05_memory_profile.py")
         return
     
-    print(f"输入文件: {memory_data['input_file']}")
-    print(f"文件大小: {memory_data['input_size_mb']:.2f} MB")
-    print(f"采样间隔: {memory_data['sample_interval_sec']} 秒")
+    print(f"Input file: {memory_data['input_file']}")
+    print(f"File size: {memory_data['input_size_mb']:.2f} MB")
+    print(f"Sampling interval: {memory_data['sample_interval_sec']} seconds")
     
-    # 创建 1x2 图表
+    # Create 1x2 figure
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle('Figure 2: Memory Efficiency Comparison', 
                  fontsize=14, fontweight='bold', y=1.00)
     
-    # 左图: 内存使用曲线
+    # Left: Memory usage curves
     plot_memory_curves(memory_data, axes[0])
     
-    # 右图: 峰值内存对比
+    # Right: Peak memory comparison
     plot_peak_memory_comparison(memory_data, axes[1])
     
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     
-    # 保存组合图表
+    # Save combined figure
     output_pdf = FIGURES_DIR / "fig2_memory.pdf"
     output_png = FIGURES_DIR / "fig2_memory.png"
     
     fig.savefig(output_pdf, dpi=300, bbox_inches='tight')
     fig.savefig(output_png, dpi=300, bbox_inches='tight')
     
-    print(f"\n组合图表已保存到:")
+    print(f"\nCombined figure saved to:")
     print(f"  {output_pdf}")
     print(f"  {output_png}")
     
-    # 保存单独的子图
-    print(f"\n保存单独子图...")
+    # Save individual subplots
+    print(f"\nSaving individual subplots...")
     
-    # 左图: 内存使用曲线
+    # Left: Memory usage curves
     fig_left, ax_left = plt.subplots(figsize=(7, 5))
     plot_memory_curves(memory_data, ax_left)
     plt.tight_layout()
@@ -201,7 +201,7 @@ def main():
     plt.close(fig_left)
     print(f"  {FIGURES_DIR / 'fig2a_memory_curves.pdf'}")
     
-    # 右图: 峰值内存对比
+    # Right: Peak memory comparison
     fig_right, ax_right = plt.subplots(figsize=(6, 5))
     plot_peak_memory_comparison(memory_data, ax_right)
     plt.tight_layout()
@@ -210,9 +210,9 @@ def main():
     plt.close(fig_right)
     print(f"  {FIGURES_DIR / 'fig2b_peak_memory.pdf'}")
     
-    # 打印内存摘要
+    # Print memory summary
     print("\n" + "=" * 60)
-    print("内存效率摘要")
+    print("Memory Efficiency Summary")
     print("=" * 60)
     
     results = {r["tool"]: r for r in memory_data["results"]}
@@ -221,30 +221,30 @@ def main():
         if tool in results and results[tool]["success"]:
             r = results[tool]
             print(f"{tool}:")
-            print(f"  执行时间: {r['execution_time_sec']:.2f}s")
-            print(f"  峰值内存: {r['peak_memory_mb']:.2f} MB")
-            print(f"  采样数: {len(r['memory_samples'])}")
+            print(f"  Execution time: {r['execution_time_sec']:.2f}s")
+            print(f"  Peak memory: {r['peak_memory_mb']:.2f} MB")
+            print(f"  Samples: {len(r['memory_samples'])}")
     
-    # 计算内存节省
+    # Calculate memory savings
     if "FastCrossMap" in results and "CrossMap" in results:
         fc = results["FastCrossMap"]
         cm = results["CrossMap"]
         if fc["success"] and cm["success"]:
             mem_ratio = cm["peak_memory_mb"] / fc["peak_memory_mb"]
             mem_saved = cm["peak_memory_mb"] - fc["peak_memory_mb"]
-            print(f"\n内存效率对比:")
+            print(f"\nMemory efficiency comparison:")
             print(f"  FastCrossMap vs CrossMap:")
-            print(f"    内存节省: {mem_saved:.2f} MB ({(1 - 1/mem_ratio)*100:.1f}%)")
-            print(f"    CrossMap 使用 {mem_ratio:.2f}x 内存")
+            print(f"    Memory savings: {mem_saved:.2f} MB ({(1 - 1/mem_ratio)*100:.1f}%)")
+            print(f"    CrossMap uses {mem_ratio:.2f}x memory")
     
     print("\n" + "=" * 60)
-    print("Figure 2 设计说明:")
+    print("Figure 2 Design Notes:")
     print("=" * 60)
-    print("左图: 内存使用曲线 - 展示三个工具随时间的内存变化")
-    print("      体现 FastCrossMap 的流式处理优势 (内存稳定)")
-    print("右图: 峰值内存对比 - 条形图展示峰值内存的直接对比")
-    print("      便于量化比较内存效率")
-    print("\n下一步: python paper/07_accuracy_analysis.py")
+    print("Left: Memory usage curves - showing memory changes over time for three tools")
+    print("      Highlights FastCrossMap's streaming advantage (stable memory)")
+    print("Right: Peak memory comparison - bar chart for direct quantitative comparison")
+    print("      Facilitates quantitative memory efficiency comparison")
+    print("\nNext step: python paper/07_accuracy_analysis.py")
 
 
 if __name__ == "__main__":

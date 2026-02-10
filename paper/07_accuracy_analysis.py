@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-07_accuracy_analysis.py - 准确性分析
+07_accuracy_analysis.py - Accuracy analysis
 
-以 UCSC liftOver 为金标准，评估 FastCrossMap、CrossMap、FastRemap 的准确性
+Evaluate accuracy of FastCrossMap, CrossMap, FastRemap using UCSC liftOver as gold standard
 
-注意：坐标转换可能产生一对多映射（区间分割），本脚本通过 name 字段追踪记录
+Note: Coordinate conversion may produce one-to-many mappings (interval splitting);
+this script tracks records via the name field
 
-用法: python paper/07_accuracy_analysis.py
-输出: paper/results/accuracy.json
+Usage: python paper/07_accuracy_analysis.py
+Output: paper/results/accuracy.json
 """
 
 import json
@@ -25,17 +26,17 @@ DATA_DIR = Path("paper/data")
 RESULTS_DIR = Path("paper/results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# 输入文件
+# Input files
 CHAIN_FILE = DATA_DIR / "hg19ToHg38.over.chain.gz"
 BED_FILE = DATA_DIR / "encode_dnase_peaks.bed.gz"
 
-# 解压的 chain 文件 (FastRemap 需要)
+# Uncompressed chain file (required by FastRemap)
 CHAIN_FILE_UNZIPPED = DATA_DIR / "hg19ToHg38.over.chain"
 
 
 @dataclass
 class BedRecord:
-    """BED 记录"""
+    """BED record"""
     chrom: str
     start: int
     end: int
@@ -43,7 +44,7 @@ class BedRecord:
     
     @classmethod
     def from_line(cls, line: str):
-        """从 BED 行解析"""
+        """Parse from BED line"""
         fields = line.strip().split('\t')
         if len(fields) < 3:
             return None
@@ -56,7 +57,7 @@ class BedRecord:
         return cls(chrom, start, end, name)
     
     def __eq__(self, other) -> bool:
-        """判断两个记录是否完全一致（忽略 name）"""
+        """Check if two records are identical (ignoring name)"""
         if not isinstance(other, BedRecord):
             return False
         return (self.chrom == other.chrom and 
@@ -66,7 +67,7 @@ class BedRecord:
 
 @dataclass
 class AccuracyMetrics:
-    """准确性指标"""
+    """Accuracy metrics"""
     tool: str
     total_input_records: int
     mapped_records: int
@@ -74,12 +75,12 @@ class AccuracyMetrics:
     mapping_rate: float
     
     # 与 liftOver 对比
-    identical_records: int          # 完全一致
-    partial_match: int              # 部分匹配（区间分割）
-    coordinate_mismatch: int        # 坐标不一致
-    missing_in_tool: int            # 工具未映射但 liftOver 映射了
+    identical_records: int          # Exact match
+    partial_match: int              # Partial match (interval splitting)
+    coordinate_mismatch: int        # Coordinate mismatch
+    missing_in_tool: int            # Tool unmapped but liftOver mapped
     
-    identity_rate: float            # 完全一致率
+    identity_rate: float            # Exact match rate
     
     success: bool
     error_message: Optional[str] = None
@@ -87,8 +88,8 @@ class AccuracyMetrics:
 
 def create_indexed_bed(input_bed: Path, output_bed: Path) -> int:
     """
-    创建带索引的 BED 文件，将行号作为 name 字段
-    返回记录数
+    Create indexed BED file with line number as name field.
+    Returns record count.
     """
     import gzip
     
@@ -107,7 +108,7 @@ def create_indexed_bed(input_bed: Path, output_bed: Path) -> int:
                     continue
                 fields = line.strip().split('\t')
                 if len(fields) >= 3:
-                    # 使用行号作为 name (从 0 开始)
+                    # Use line number as name (starting from 0)
                     chrom, start, end = fields[0], fields[1], fields[2]
                     fout.write(f"{chrom}\t{start}\t{end}\tID_{count}\t0\t.\n")
                     count += 1
@@ -118,16 +119,16 @@ def create_indexed_bed(input_bed: Path, output_bed: Path) -> int:
 def run_tool_and_load_output(tool: str, indexed_bed: Path, chain_file: Path, 
                              output_dir: Path) -> Dict[int, List[BedRecord]]:
     """
-    运行工具并加载输出
-    返回: {record_id: [BedRecord, ...]}
+    Run tool and load output.
+    Returns: {record_id: [BedRecord, ...]}
     
-    record_id 是输入记录的索引（从 name 字段解析）
-    一条输入记录可能对应多条输出记录（区间分割）
+    record_id is the input record index (parsed from name field)
+    One input record may correspond to multiple output records (interval splitting)
     """
     output_file = output_dir / f"{tool.lower()}_accuracy.bed"
     unmap_file = Path(str(output_file) + ".unmap")
     
-    # 根据工具选择命令
+    # Based on tool, choose command
     if tool == "FastCrossMap":
         cmd = [
             "./target/release/fast-crossmap",
@@ -152,13 +153,13 @@ def run_tool_and_load_output(tool: str, indexed_bed: Path, chain_file: Path,
             str(unmap_file)
         ]
     elif tool == "FastRemap":
-        # FastRemap 需要解压的 chain 文件
+        # FastRemap needs uncompressed chain file
         chain_unzipped = CHAIN_FILE_UNZIPPED
         if not chain_unzipped.exists():
             subprocess.run(["gunzip", "-k", str(chain_file)], check=True)
         
-        # FastRemap 会自动在输出文件名后加 .bed 后缀
-        # 所以我们需要去掉 .bed 后缀
+        # FastRemap automatically appends .bed suffix to output filename
+        # So we need to remove the .bed suffix
         output_base = str(output_file).replace('.bed', '')
         unmap_base = str(unmap_file).replace('.bed.unmap', '')
         
@@ -173,7 +174,7 @@ def run_tool_and_load_output(tool: str, indexed_bed: Path, chain_file: Path,
     else:
         raise ValueError(f"Unknown tool: {tool}")
     
-    # 运行命令
+    # Run command
     print(f"  Running {tool}...")
     result = subprocess.run(cmd, capture_output=True, text=True)
     
@@ -181,7 +182,7 @@ def run_tool_and_load_output(tool: str, indexed_bed: Path, chain_file: Path,
         print(f"  Warning: {tool} failed: {result.stderr[:200]}")
         return {}
     
-    # 加载输出 - 按 name 字段分组
+    # Load output - group by name field
     mapped_records = defaultdict(list)
     
     if output_file.exists():
@@ -203,7 +204,7 @@ def compare_with_gold_standard(tool_mapped: Dict[int, List[BedRecord]],
                                gold_mapped: Dict[int, List[BedRecord]],
                                total_records: int) -> Dict:
     """
-    与金标准对比，计算准确性指标
+    Compare with gold standard, calculate accuracy metrics.
     """
     identical = 0
     partial_match = 0
@@ -215,10 +216,10 @@ def compare_with_gold_standard(tool_mapped: Dict[int, List[BedRecord]],
         tool_records = tool_mapped.get(record_id, [])
         
         if gold_records and tool_records:
-            # 两者都映射了
-            # 检查是否完全一致（所有输出记录都相同）
+            # Both mapped
+            # Check if completely identical (all output records match)
             if len(gold_records) == len(tool_records):
-                # 排序后比较
+                # Sort and compare
                 gold_sorted = sorted(gold_records, key=lambda r: (r.chrom, r.start, r.end))
                 tool_sorted = sorted(tool_records, key=lambda r: (r.chrom, r.start, r.end))
                 
@@ -227,12 +228,12 @@ def compare_with_gold_standard(tool_mapped: Dict[int, List[BedRecord]],
                 else:
                     coord_mismatch += 1
             else:
-                # 输出记录数不同，算作部分匹配
+                # Different number of output records, count as partial match
                 partial_match += 1
         elif gold_records and not tool_records:
-            # 金标准映射了，但工具未映射
+            # Gold standard mapped, but tool did not
             missing_in_tool += 1
-        # 如果工具映射了但金标准未映射，这种情况很少见，暂不单独统计
+        # If tool mapped but gold standard did not, this is rare, not counted separately
     
     return {
         "identical": identical,
@@ -246,10 +247,10 @@ def analyze_accuracy(tool: str, indexed_bed: Path, chain_file: Path,
                     gold_mapped: Dict[int, List[BedRecord]], 
                     total_records: int,
                     output_dir: Path) -> AccuracyMetrics:
-    """分析工具的准确性"""
+    """Analyze tool accuracy"""
     print(f"\n[{tool}]")
     
-    # 运行工具并加载输出
+    # Run tool and load output
     tool_mapped = run_tool_and_load_output(tool, indexed_bed, chain_file, output_dir)
     
     if not tool_mapped:
@@ -268,12 +269,12 @@ def analyze_accuracy(tool: str, indexed_bed: Path, chain_file: Path,
             error_message="Failed to run tool or load output"
         )
     
-    # 与金标准对比
+    # Compare with gold standard
     comparison = compare_with_gold_standard(
         tool_mapped, gold_mapped, total_records
     )
     
-    # 计算指标
+    # Calculate metrics
     mapped_count = len(tool_mapped)
     unmapped_count = total_records - mapped_count
     mapping_rate = mapped_count / total_records if total_records > 0 else 0.0
@@ -304,33 +305,33 @@ def analyze_accuracy(tool: str, indexed_bed: Path, chain_file: Path,
 
 def main():
     print("=" * 60)
-    print("准确性分析 (以 liftOver 为金标准)")
+    print("Accuracy Analysis (Gold Standard: liftOver)")
     print("=" * 60)
     
-    # 检查输入文件
+    # Check input files
     if not BED_FILE.exists():
-        print(f"错误: BED 文件不存在: {BED_FILE}")
-        print("请先运行: bash paper/01_download_data.sh")
+        print(f"Error: BED file not found: {BED_FILE}")
+        print("Please run first: bash paper/01_download_data.sh")
         return
     
     if not CHAIN_FILE.exists():
-        print(f"错误: Chain 文件不存在: {CHAIN_FILE}")
-        print("请先运行: bash paper/01_download_data.sh")
+        print(f"Error: Chain file not found: {CHAIN_FILE}")
+        print("Please run first: bash paper/01_download_data.sh")
         return
     
-    # 创建输出目录
+    # Create output directory
     output_dir = RESULTS_DIR / "accuracy_analysis"
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # 创建带索引的 BED 文件
-    print(f"\n创建带索引的 BED 文件...")
+    # Create indexed BED file
+    print(f"\nCreating indexed BED file...")
     indexed_bed = output_dir / "indexed_input.bed"
     total_records = create_indexed_bed(BED_FILE, indexed_bed)
-    print(f"输入记录数: {total_records:,}")
+    print(f"Input records: {total_records:,}")
     
-    # 运行 liftOver 作为金标准
+    # Run liftOver as gold standard
     print("\n" + "=" * 60)
-    print("运行 liftOver (金标准)")
+    print("Running liftOver (Gold Standard)")
     print("=" * 60)
     gold_mapped = run_tool_and_load_output(
         "liftOver", indexed_bed, CHAIN_FILE, output_dir
@@ -343,12 +344,12 @@ def main():
     print(f"  liftOver unmapped: {gold_unmapped_count}")
     
     if not gold_mapped:
-        print("错误: liftOver 未能生成输出")
+        print("Error: liftOver failed to generate output")
         return
     
-    # 分析各工具的准确性
+    # Analyze accuracy of each tool
     print("\n" + "=" * 60)
-    print("分析工具准确性")
+    print("Analyzing Tool Accuracy")
     print("=" * 60)
     
     results = []
@@ -361,7 +362,7 @@ def main():
         )
         results.append(metrics)
     
-    # 保存结果
+    # Save results
     output_json = RESULTS_DIR / "accuracy.json"
     with open(output_json, 'w') as f:
         json.dump({
@@ -374,13 +375,13 @@ def main():
             "results": [asdict(r) for r in results]
         }, f, indent=2)
     
-    print(f"\n结果已保存到: {output_json}")
+    print(f"\nResults saved to: {output_json}")
     
-    # 打印摘要
+    # Print summary
     print("\n" + "=" * 60)
-    print("准确性分析摘要")
+    print("Accuracy Analysis Summary")
     print("=" * 60)
-    print(f"{'工具':<15} {'映射率':<10} {'一致率':<10} {'部分匹配':<10} {'坐标偏差':<10}")
+    print(f"{'Tool':<15} {'Map Rate':<10} {'Identity':<10} {'Partial':<10} {'Coord Diff':<10}")
     print("-" * 60)
     
     for r in results:
@@ -388,11 +389,11 @@ def main():
             print(f"{r.tool:<15} {r.mapping_rate*100:<10.2f}% {r.identity_rate*100:<10.2f}% "
                   f"{r.partial_match:<10} {r.coordinate_mismatch:<10}")
     
-    print("\n说明:")
-    print("- 一致率: 与 liftOver 输出完全相同的记录比例")
-    print("- 部分匹配: 区间被分割，输出记录数不同")
-    print("- 坐标偏差: 输出记录数相同但坐标不同")
-    print("\n下一步: python paper/08_plot_accuracy.py")
+    print("\nNotes:")
+    print("- Identity rate: Percentage of records with identical coordinates to liftOver")
+    print("- Partial match: Intervals split into different number of output regions")
+    print("- Coord mismatch: Same number of output records but different coordinates")
+    print("\nNext step: python paper/08_plot_accuracy.py")
 
 
 if __name__ == "__main__":

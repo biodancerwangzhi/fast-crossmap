@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-03_benchmark_bam.py - BAM 格式基准测试
+03_benchmark_bam.py - BAM format benchmark
 
-运行 FastCrossMap vs CrossMap vs FastRemap 基准测试
-(liftOver 不支持 BAM 格式)
+Run FastCrossMap vs CrossMap vs FastRemap benchmark
+(liftOver does not support BAM format)
 
-用法: python paper/03_benchmark_bam.py
-输出: paper/results/benchmark_bam.json
+Usage: python paper/03_benchmark_bam.py
+Output: paper/results/benchmark_bam.json
 """
 
 import json
@@ -25,17 +25,17 @@ DATA_DIR = Path("paper/data")
 RESULTS_DIR = Path("paper/results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# 输入文件
+# Input files
 CHAIN_FILE = DATA_DIR / "hg19ToHg38.over.chain.gz"
 BAM_FILE = DATA_DIR / "encode_chipseq.bam"
 
-# 重复次数
+# Number of runs
 NUM_RUNS = 5
 
 
 @dataclass
 class BenchmarkResult:
-    """基准测试结果"""
+    """Benchmark result"""
     tool: str
     format: str
     input_file: str
@@ -48,14 +48,14 @@ class BenchmarkResult:
 
 
 def get_file_size_mb(file_path: Path) -> float:
-    """获取文件大小 (MB)"""
+    """Get file size (MB)"""
     return file_path.stat().st_size / (1024 * 1024)
 
 
 def run_with_time(cmd: list[str]) -> tuple[float, float, bool, str]:
     """
-    运行命令并测量时间和内存
-    返回: (执行时间秒, 峰值内存MB, 是否成功, 错误信息)
+    Run command and measure time and memory.
+    Returns: (execution_time_sec, peak_memory_mb, success, error_message)
     """
     import os
     
@@ -65,11 +65,11 @@ def run_with_time(cmd: list[str]) -> tuple[float, float, bool, str]:
             cmd,
             capture_output=True,
             text=True,
-            timeout=3600  # 1 小时超时
+            timeout=3600  # 1 hour timeout
         )
         elapsed = time.time() - start_time
         
-        # 尝试使用 /usr/bin/time 获取内存
+        # Try to get memory via /usr/bin/time
         peak_memory_mb = 0
         try:
             time_result = subprocess.run(
@@ -102,11 +102,11 @@ def run_with_time(cmd: list[str]) -> tuple[float, float, bool, str]:
 
 
 def benchmark_fastcrossmap(bam_file: Path, chain_file: Path, output_dir: Path) -> BenchmarkResult:
-    """测试 FastCrossMap"""
+    """Benchmark FastCrossMap"""
     print("  Running FastCrossMap...")
     output_file = output_dir / "fastcrossmap_output.bam"
     
-    # FastCrossMap 使用位置参数
+    # FastCrossMap uses positional args
     cmd = [
         "./fast-crossmap-linux-x64/fast-crossmap",
         "bam",
@@ -161,13 +161,13 @@ def benchmark_fastcrossmap(bam_file: Path, chain_file: Path, output_dir: Path) -
 
 
 def benchmark_crossmap(bam_file: Path, chain_file: Path, output_dir: Path) -> BenchmarkResult:
-    """测试 CrossMap"""
+    """Benchmark CrossMap"""
     print("  Running CrossMap...")
     output_file = output_dir / "crossmap_output.bam"
     
     cmd = [
         "CrossMap", "bam",
-        "-a",  # 输出所有 reads
+        "-a",  # Output all reads
         str(chain_file),
         str(bam_file),
         str(output_file)
@@ -219,15 +219,15 @@ def benchmark_crossmap(bam_file: Path, chain_file: Path, output_dir: Path) -> Be
 
 
 def benchmark_fastremap(bam_file: Path, chain_file: Path, output_dir: Path) -> BenchmarkResult:
-    """测试 FastRemap"""
+    """Benchmark FastRemap"""
     print("  Running FastRemap...")
     output_file = output_dir / "fastremap_output.bam"
     unmap_file = output_dir / "fastremap_output.bam.unmap"
     
-    # FastRemap 不支持 .gz，需要解压的 chain 文件
+    # FastRemap does not support .gz, needs uncompressed chain file
     chain_unzipped = chain_file.parent / "hg19ToHg38.over.chain"
     if not chain_unzipped.exists():
-        print("    解压 chain 文件供 FastRemap 使用...")
+        print("    Decompressing chain file for FastRemap...")
         import subprocess
         subprocess.run(["gunzip", "-k", str(chain_file)], check=True)
     
@@ -287,34 +287,34 @@ def benchmark_fastremap(bam_file: Path, chain_file: Path, output_dir: Path) -> B
 
 def main():
     print("=" * 60)
-    print("BAM 格式基准测试")
+    print("BAM Format Benchmark")
     print("=" * 60)
     
-    # 检查输入文件
+    # Check input files
     if not BAM_FILE.exists():
-        print(f"错误: BAM 文件不存在: {BAM_FILE}")
-        print("请先运行: bash paper/01_download_data.sh")
+        print(f"Error: BAM file not found: {BAM_FILE}")
+        print("Please run first: bash paper/01_download_data.sh")
         return
     
     if not CHAIN_FILE.exists():
-        print(f"错误: Chain 文件不存在: {CHAIN_FILE}")
-        print("请先运行: bash paper/01_download_data.sh")
+        print(f"Error: Chain file not found: {CHAIN_FILE}")
+        print("Please run first: bash paper/01_download_data.sh")
         return
     
-    # 获取文件大小
+    # Get file size
     input_size = get_file_size_mb(BAM_FILE)
-    print(f"\n输入文件: {BAM_FILE}")
-    print(f"文件大小: {input_size:.2f} MB")
-    print(f"重复次数: {NUM_RUNS}")
+    print(f"\nInput file: {BAM_FILE}")
+    print(f"File size: {input_size:.2f} MB")
+    print(f"Number of runs: {NUM_RUNS}")
     print()
-    print("注意: liftOver 不支持 BAM 格式")
+    print("Note: liftOver does not support BAM format")
     print()
     
-    # 创建输出目录
+    # Create output directory
     output_dir = RESULTS_DIR / "bam_benchmark"
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # 运行基准测试
+    # Run benchmarks
     results = []
     
     print("[1/3] FastCrossMap")
@@ -326,7 +326,7 @@ def main():
     print("[3/3] FastRemap")
     results.append(benchmark_fastremap(BAM_FILE, CHAIN_FILE, output_dir))
     
-    # 保存结果
+    # Save results
     output_json = RESULTS_DIR / "benchmark_bam.json"
     with open(output_json, 'w') as f:
         json.dump({
@@ -337,33 +337,33 @@ def main():
             "results": [asdict(r) for r in results]
         }, f, indent=2)
     
-    print(f"\n结果已保存到: {output_json}")
+    print(f"\nResults saved to: {output_json}")
     
-    # 打印摘要
+    # Print summary
     print("\n" + "=" * 60)
-    print("基准测试结果摘要")
+    print("Benchmark Results Summary")
     print("=" * 60)
-    print(f"{'工具':<15} {'时间(s)':<12} {'吞吐量(MB/s)':<15} {'内存(MB)':<12} {'状态':<10}")
+    print(f"{'Tool':<15} {'Time(s)':<12} {'Throughput(MB/s)':<15} {'Memory(MB)':<12} {'Status':<10}")
     print("-" * 60)
     
     for r in results:
         status = "✓" if r.success else "✗"
         print(f"{r.tool:<15} {r.execution_time_sec:<12.2f} {r.throughput_mb_per_sec:<15.2f} {r.peak_memory_mb:<12.1f} {status:<10}")
     
-    # 计算加速比
+    # Calculate speedup
     fc_result = next((r for r in results if r.tool == "FastCrossMap" and r.success), None)
     cm_result = next((r for r in results if r.tool == "CrossMap" and r.success), None)
     fr_result = next((r for r in results if r.tool == "FastRemap" and r.success), None)
     
     if fc_result and cm_result:
         speedup = cm_result.execution_time_sec / fc_result.execution_time_sec
-        print(f"\nFastCrossMap vs CrossMap: {speedup:.1f}x 加速")
+        print(f"\nFastCrossMap vs CrossMap: {speedup:.1f}x speedup")
     
     if fc_result and fr_result:
         speedup = fr_result.execution_time_sec / fc_result.execution_time_sec
-        print(f"FastCrossMap vs FastRemap: {speedup:.1f}x 加速")
+        print(f"FastCrossMap vs FastRemap: {speedup:.1f}x speedup")
     
-    print("\n下一步: python paper/04_plot_performance.py")
+    print("\nNext step: python paper/04_plot_performance.py")
 
 
 if __name__ == "__main__":

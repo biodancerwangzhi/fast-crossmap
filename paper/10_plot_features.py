@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-10_plot_features.py - 生成功能对比热力图 (Figure 4)
+10_plot_features.py - Generate feature comparison heatmap (Figure 4)
 
-Figure 4 设计:
-  热力图展示各工具的功能支持情况
-  - 行: 功能项
-  - 列: 工具
-  - 颜色: 支持(绿)/不支持(红)
+Figure 4 design:
+  Heatmap showing feature support for each tool
+  - Rows: Features
+  - Columns: Tools
+  - Colors: Supported(green)/Not supported(red)
 
-设计理念:
-- 直观展示功能覆盖率差异
-- 突出 FastCrossMap 的全面性
-- 易于识别各工具的优劣势
+Design rationale:
+- Visually show feature coverage differences
+- Highlight FastCrossMap's comprehensiveness
+- Easy to identify strengths and weaknesses of each tool
 
-用法: python paper/10_plot_features.py
-输出: paper/figures/fig4_features.pdf
+Usage: python paper/10_plot_features.py
+Output: paper/figures/fig4_features.pdf
 """
 
 import json
@@ -35,7 +35,7 @@ TOOL_ORDER = ["FastCrossMap", "CrossMap", "liftOver", "FastRemap"]
 
 
 def load_features_data():
-    """加载功能审计数据"""
+    """Load feature audit data"""
     features_file = RESULTS_DIR / "features.json"
     if not features_file.exists():
         return None
@@ -61,9 +61,9 @@ def create_feature_heatmap(data, ax):
     
     tools_data = {t["tool"]: t for t in data["tools"]}
     
-    # 定义功能列表（不包含类别行，类别信息保留用于分组）
+    # Define feature list (categories preserved for grouping)
     features = [
-        # 文件格式支持
+        # File format support
         ("BED", "format_bed", "File Formats"),
         ("BAM/SAM", "format_bam", "File Formats"),
         ("VCF", "format_vcf", "File Formats"),
@@ -73,25 +73,25 @@ def create_feature_heatmap(data, ax):
         ("MAF", "format_maf", "File Formats"),
         ("GVCF", "format_gvcf", "File Formats"),
         
-        # 压缩文件支持
+        # Compressed file support
         ("Compressed Chain", "compressed_chain", "Compression"),
         ("Compressed Input", "compressed_input", "Compression"),
         
-        # 多线程支持
+        # Multi-threading support
         ("Multithreading", "multithreading", "Threading"),
         ("User Control Threads", "user_controllable_threads", "Threading"),
         
-        # 跨平台支持
+        # Cross-platform support
         ("Linux", "platform_linux", "Platforms"),
         ("macOS", "platform_macos", "Platforms"),
         ("Windows", "platform_windows", "Platforms"),
         
-        # 其他功能
+        # Other features
         ("Unmapped Output", "unmapped_output", "Other"),
         ("Streaming Process", "streaming_processing", "Other"),
     ]
     
-    # 构建矩阵
+    # Build matrix
     matrix = []
     feature_labels = []
     
@@ -108,11 +108,11 @@ def create_feature_heatmap(data, ax):
     
     matrix = np.array(matrix)
     
-    # 创建热力图
-    cmap = ListedColormap(['#ffcccc', '#ccffcc'])  # 红色(不支持), 绿色(支持)
+    # Create heatmap
+    cmap = ListedColormap(['#ffcccc', '#ccffcc'])  # Red(not supported), Green(supported)
     im = ax.imshow(matrix, cmap=cmap, aspect='auto', vmin=0, vmax=1)
     
-    # 定义类别颜色
+    # Define category colors
     category_colors = {
         "File Formats": "#1f77b4",    # 蓝色
         "Compression": "#ff7f0e",     # 橙色
@@ -121,25 +121,25 @@ def create_feature_heatmap(data, ax):
         "Other": "#9467bd"            # 紫色
     }
     
-    # 为每个功能项分配类别颜色
+    # Assign category colors to each feature
     feature_colors = []
     for _, _, category in features:
         feature_colors.append(category_colors[category])
     
-    # 设置坐标轴
+    # Set axes
     ax.set_xticks(np.arange(len(TOOL_ORDER)))
     ax.set_yticks(np.arange(len(feature_labels)))
     ax.set_xticklabels(TOOL_ORDER, fontsize=10, fontweight='bold')
     ax.set_yticklabels(feature_labels, fontsize=9)
     
-    # 为Y轴标签设置颜色
+    # Set Y-axis label colors
     for tick_label, color in zip(ax.get_yticklabels(), feature_colors):
         tick_label.set_color(color)
     
-    # 旋转 x 轴标签
+    # Rotate x-axis labels
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
     
-    # 在每个单元格中添加符号
+    # Add symbol in each cell
     for i in range(len(feature_labels)):
         for j in range(len(TOOL_ORDER)):
             text = "✓" if matrix[i, j] == 1 else "✗"
@@ -147,7 +147,7 @@ def create_feature_heatmap(data, ax):
             ax.text(j, i, text, ha="center", va="center", 
                    color=color, fontsize=12, fontweight='bold')
     
-    # 添加分类分隔线和类别标签
+    # Add category separator lines and labels
     category_positions = []
     category_labels = {}
     current_category = None
@@ -159,11 +159,11 @@ def create_feature_heatmap(data, ax):
             current_category = category
             category_labels[category] = i
     
-    # 画分隔线（黑色）
+    # Draw separator lines (black)
     for pos in category_positions:
         ax.axhline(y=pos, color='black', linewidth=2, linestyle='-')
     
-    # 添加类别标签（在Y轴左侧，与每个分组对齐）
+    # Add category labels (on left side of Y-axis, aligned with each group)
     category_ranges = {
         "File Formats": (0, 7),
         "Compression": (8, 9),
@@ -173,18 +173,18 @@ def create_feature_heatmap(data, ax):
     }
     
     for category, (start, end) in category_ranges.items():
-        # 计算分组的中间位置
+        # Calculate group center position
         mid_row = (start + end) / 2
         color = category_colors[category]
         
-        # 在Y轴左侧显示类别标签（带颜色）
+        # Display category label on left side of Y-axis (with color)
         ax.text(-1.3, mid_row, f"{category}", ha='left', va='center', 
                fontsize=9, fontweight='bold', 
                rotation=90, color=color)
     
     ax.set_title('Feature Support Matrix', fontsize=14, fontweight='bold', pad=20)
     
-    # 移除边框
+    # Remove borders
     for spine in ax.spines.values():
         spine.set_visible(False)
     
@@ -196,23 +196,23 @@ def create_feature_heatmap(data, ax):
 
 def main():
     print("=" * 60)
-    print("生成功能对比热力图 (Figure 4)")
+    print("Generating Feature Comparison Heatmap (Figure 4)")
     print("=" * 60)
     
-    # 加载数据
+    # Load data
     features_data = load_features_data()
     
     if not features_data:
-        print("错误: 没有找到功能审计数据")
-        print("请先运行: python paper/09_feature_audit.py")
+        print("Error: No feature audit data found")
+        print("Please run first: python paper/09_feature_audit.py")
         return
     
-    print(f"工具数: {len(features_data['tools'])}")
+    print(f"Tools: {len(features_data['tools'])}")
     
-    # 创建图表 (只有热力图)
+    # Create figure (heatmap only)
     fig, ax = plt.subplots(figsize=(10, 10))
     
-    # 功能热力图
+    # Feature heatmap
     create_feature_heatmap(features_data, ax)
     
     # fig.suptitle('Feature Support Comparison', 
@@ -220,19 +220,19 @@ def main():
     
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     
-    # 保存组合图表
+    # Save combined figure
     output_pdf = FIGURES_DIR / "fig4_features.pdf"
     output_png = FIGURES_DIR / "fig4_features.png"
     
     fig.savefig(output_pdf, dpi=300, bbox_inches='tight')
     fig.savefig(output_png, dpi=300, bbox_inches='tight')
     
-    print(f"\n组合图表已保存到:")
+    print(f"\nCombined figure saved to:")
     print(f"  {output_pdf}")
     print(f"  {output_png}")
     
-    # 保存单独的子图（功能热力图只有一个图，所以单独保存一次即可）
-    print(f"\n保存单独子图...")
+    # Save individual subplots (only one heatmap, save once)
+    print(f"\nSaving individual subplots...")
     fig_single, ax_single = plt.subplots(figsize=(10, 10))
     create_feature_heatmap(features_data, ax_single)
     plt.tight_layout()
@@ -241,9 +241,9 @@ def main():
     plt.close(fig_single)
     print(f"  {FIGURES_DIR / 'fig4_features_heatmap.pdf'}")
     
-    # 打印功能摘要
+    # Print feature summary
     print("\n" + "=" * 60)
-    print("功能覆盖率摘要")
+    print("Feature Coverage Summary")
     print("=" * 60)
     
     tools_data = {t["tool"]: t for t in features_data["tools"]}
@@ -252,21 +252,21 @@ def main():
         if tool in tools_data:
             t = tools_data[tool]
             print(f"\n{tool}:")
-            print(f"  格式支持: {t['format_count']}/8")
-            print(f"  平台支持: {t['platform_count']}/3")
-            print(f"  压缩 Chain: {'✓' if t['compressed_chain'] else '✗'}")
-            print(f"  多线程: {'✓' if t['multithreading'] else '✗'}")
-            print(f"  可控线程: {'✓' if t['user_controllable_threads'] else '✗'}")
-            print(f"  覆盖率: {t['feature_coverage_score']*100:.1f}%")
+            print(f"  Format support: {t['format_count']}/8")
+            print(f"  Platform support: {t['platform_count']}/3")
+            print(f"  Compressed Chain: {'✓' if t['compressed_chain'] else '✗'}")
+            print(f"  Multi-threading: {'✓' if t['multithreading'] else '✗'}")
+            print(f"  Controllable threads: {'✓' if t['user_controllable_threads'] else '✗'}")
+            print(f"  Coverage: {t['feature_coverage_score']*100:.1f}%")
     
     print("\n" + "=" * 60)
-    print("Figure 4 设计说明:")
+    print("Figure 4 Design Notes:")
     print("=" * 60)
-    print("功能支持矩阵热力图 - 直观展示各工具的功能支持情况")
-    print("  绿色(✓)表示支持，红色(✗)表示不支持")
-    print("  按类别分组：文件格式、压缩、多线程、平台、其他")
-    print("  FastCrossMap 支持最全面 (8/8 格式, 3/3 平台)")
-    print("\n下一步: python paper/11_plot_radar.py")
+    print("Feature support matrix heatmap - visual overview of tool capabilities")
+    print("  Green(✓) = supported, Red(✗) = not supported")
+    print("  Grouped by category: File Formats, Compression, Threading, Platforms, Other")
+    print("  FastCrossMap has the most comprehensive support (8/8 formats, 3/3 platforms)")
+    print("\nNext step: python paper/11_plot_radar.py")
 
 
 if __name__ == "__main__":
