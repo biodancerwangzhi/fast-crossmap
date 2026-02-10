@@ -57,7 +57,7 @@ def count_bed_records(bed_file):
 def run_fastcrossmap(chain_file, input_file, output_file, threads=1):
     """运行 FastCrossMap 并返回执行时间"""
     cmd = [
-        "./target/release/fast-crossmap", "bed",
+        "./fast-crossmap-linux-x64/fast-crossmap", "bed",
         "-t", str(threads),
         str(chain_file),
         str(input_file),

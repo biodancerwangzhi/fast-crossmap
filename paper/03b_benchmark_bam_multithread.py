@@ -42,7 +42,7 @@ def get_file_size_mb(filepath):
 def run_fastcrossmap_bam(chain_file, input_file, output_file, threads=1):
     """运行 FastCrossMap BAM 转换并返回执行时间"""
     cmd = [
-        "./target/release/fast-crossmap", "bam",
+        "./fast-crossmap-linux-x64/fast-crossmap", "bam",
         "-t", str(threads),
         str(chain_file),
         str(input_file),

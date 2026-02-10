@@ -88,8 +88,8 @@ check_dependencies() {
     python3 -c "import psutil" 2>/dev/null || missing+=("psutil")
     
     # 检查工具
-    if ! command -v ./target/release/fast-crossmap &> /dev/null; then
-        if [ ! -f "./target/release/fast-crossmap" ]; then
+    if ! command -v ./fast-crossmap-linux-x64/fast-crossmap &> /dev/null; then
+        if [ ! -f "./fast-crossmap-linux-x64/fast-crossmap" ]; then
             missing+=("fast-crossmap (请先运行 cargo build --release)")
         fi
     fi

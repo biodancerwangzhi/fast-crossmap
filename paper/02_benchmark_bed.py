@@ -154,7 +154,7 @@ def benchmark_fastcrossmap(bed_file: Path, chain_file: Path, output_dir: Path) -
     
     # FastCrossMap 使用位置参数: fast-crossmap bed <CHAIN> <INPUT> [OUTPUT]
     cmd = [
-        "./target/release/fast-crossmap",
+        "./fast-crossmap-linux-x64/fast-crossmap",
         "bed",
         str(chain_file),
         str(bed_file),
