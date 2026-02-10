@@ -131,7 +131,7 @@ def run_tool_and_load_output(tool: str, indexed_bed: Path, chain_file: Path,
     # Based on tool, choose command
     if tool == "FastCrossMap":
         cmd = [
-            "./target/release/fast-crossmap",
+            "./fast-crossmap-linux-x64/fast-crossmap",
             "bed",
             str(chain_file),
             str(indexed_bed),
