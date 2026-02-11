@@ -105,4 +105,4 @@ __pycache__/
 *.bak
 
 
-
+.gitignore
