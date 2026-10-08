@@ -50,19 +50,22 @@ jobs:
       
       - name: 打包
         run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           mkdir -p release
           if [[ "${{ matrix.target }}" == *"musl"* ]]; then
-            SUFFIX="linux-x64-static"
+            PLATFORM="linux-x86_64-static"
           elif [[ "${{ matrix.target }}" == *"aarch64"* ]]; then
-            SUFFIX="linux-arm64"
+            PLATFORM="linux-arm64"
           else
-            SUFFIX="linux-x64"
+            PLATFORM="linux-x86_64"
           fi
-          
-          mkdir -p "fast-crossmap-$SUFFIX"
-          cp target/${{ matrix.target }}/release/fast-crossmap "fast-crossmap-$SUFFIX/"
-          tar -czvf "release/fast-crossmap-$SUFFIX.tar.gz" "fast-crossmap-$SUFFIX"
-      
+
+          NAME="fcm-${VERSION}-${PLATFORM}"
+          mkdir -p "$NAME"
+          cp target/${{ matrix.target }}/release/fast-crossmap "$NAME/"
+          sha256sum "$NAME/fast-crossmap" > "$NAME/SHA256SUMS"
+          tar -czvf "release/${NAME}.tar.gz" "$NAME"
+
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
@@ -82,23 +85,27 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       
       - name: 构建 (不含 BAM 支持)
-        run: cargo build --release --no-default-features
+        run: cargo build --release --no-default-features --features cli
       
       - name: 打包
         shell: pwsh
         run: |
+          $version = ((Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value)
+          $name = "fcm-$version-windows-x64"
           New-Item -ItemType Directory -Force -Path release
-          New-Item -ItemType Directory -Force -Path fast-crossmap-windows-x64
-          Copy-Item target/release/fast-crossmap.exe fast-crossmap-windows-x64/
+          New-Item -ItemType Directory -Force -Path $name
+          Copy-Item target/release/fast-crossmap.exe "$name/"
+          $hash = (Get-FileHash "$name/fast-crossmap.exe" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name/fast-crossmap.exe" | Out-File -FilePath "$name/SHA256SUMS" -Encoding ascii
           # 添加说明文件
-          $readmePath = "fast-crossmap-windows-x64/README.txt"
+          $readmePath = "$name/README.txt"
           "FastCrossMap for Windows" | Out-File -FilePath $readmePath -Encoding utf8
           "========================`n" | Out-File -FilePath $readmePath -Encoding utf8 -Append
           "Note: This Windows build does NOT include BAM/SAM/CRAM support." | Out-File -FilePath $readmePath -Encoding utf8 -Append
           "Supported formats: BED, VCF, GVCF, GFF, GTF, Wiggle, bedGraph, BigWig, MAF`n" | Out-File -FilePath $readmePath -Encoding utf8 -Append
           "For BAM support, please use the Linux or macOS version." | Out-File -FilePath $readmePath -Encoding utf8 -Append
-          
-          Compress-Archive -Path fast-crossmap-windows-x64 -DestinationPath release/fast-crossmap-windows-x64.zip
+
+          Compress-Archive -Path $name -DestinationPath "release/$name.zip"
       
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
@@ -130,16 +137,19 @@ jobs:
       
       - name: 打包
         run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           mkdir -p release
           if [[ "${{ matrix.target }}" == *"aarch64"* ]]; then
-            SUFFIX="macos-arm64"
+            PLATFORM="macos-arm64"
           else
-            SUFFIX="macos-x64"
+            PLATFORM="macos-x86_64"
           fi
-          
-          mkdir -p "fast-crossmap-$SUFFIX"
-          cp target/${{ matrix.target }}/release/fast-crossmap "fast-crossmap-$SUFFIX/"
-          tar -czvf "release/fast-crossmap-$SUFFIX.tar.gz" "fast-crossmap-$SUFFIX"
+
+          NAME="fcm-${VERSION}-${PLATFORM}"
+          mkdir -p "$NAME"
+          cp target/${{ matrix.target }}/release/fast-crossmap "$NAME/"
+          shasum -a 256 "$NAME/fast-crossmap" > "$NAME/SHA256SUMS"
+          tar -czvf "release/${NAME}.tar.gz" "$NAME"
       
       - name: 上传构建产物
         uses: actions/upload-artifact@v4

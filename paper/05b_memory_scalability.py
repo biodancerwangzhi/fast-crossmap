@@ -14,6 +14,8 @@ Output: paper/results/memory_scalability.json
 """
 
 import json
+import os
+import shutil
 import subprocess
 import time
 import psutil
@@ -32,8 +34,8 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
-# FastCrossMap executable path
-FASTCROSSMAP_BIN = "target/release/fast-crossmap"
+# FastCrossMap binary (override with FCM_BIN=/path/to/fast-crossmap)
+FASTCROSSMAP_BIN = os.environ.get("FCM_BIN", "./target/release/fast-crossmap")
 
 # Chain file
 CHAIN_FILE = DATA_DIR / "hg19ToHg38.over.chain.gz"
@@ -54,20 +56,19 @@ def check_dependencies():
     print("Checking dependencies...")
     
     # Check FastCrossMap
-    if not Path(FASTCROSSMAP_BIN).exists():
-        print(f"Error: FastCrossMap not found: {FASTCROSSMAP_BIN}")
+    if not (Path(FASTCROSSMAP_BIN).is_file() and os.access(FASTCROSSMAP_BIN, os.X_OK)):
+        print(f"Error: FastCrossMap not found or not executable: {FASTCROSSMAP_BIN}")
         print("Please build first: cargo build --release")
+        print("Or set FCM_BIN=/path/to/fast-crossmap")
         return False
     
-    # Check samtools
-    try:
-        subprocess.run(["samtools", "--version"], 
-                      capture_output=True, check=True)
-        print("  ✓ samtools")
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    # Check samtools by looking for the executable itself: samtools versions
+    # differ in which --version spelling they accept, so do not probe it by flag.
+    if shutil.which("samtools") is None:
         print("Error: samtools not installed")
         print("Please install: conda install -c bioconda samtools")
         return False
+    print("  ✓ samtools")
     
     # Check Chain file
     if not CHAIN_FILE.exists():
@@ -120,10 +121,18 @@ def create_bam_subset(source_bam, output_bam, target_size_mb):
     ratio = target_size_mb / source_size_mb
     print(f"  Extraction ratio: {ratio:.2%}")
     
-    # Use samtools view to extract subset
-    # -s parameter specifies sampling ratio (needs random seed)
+    # Use samtools view to extract a subset.
+    #
+    # -s takes INT.FRAC and reads everything after the point AS the fraction --
+    # "42.0383" means 3.83%, not 38.3%. So it has to be zero-padded to a fixed
+    # width: a 3.83% ratio is "42.0383", never "42.3" (samtools reads that as 30%).
+    #
+    # The previous form was f"{seed}.{int(ratio * 100)}", which dropped the
+    # padding and truncated, so every subset came out the wrong size and nothing
+    # raised: 50 MB -> 391 MB, 100 MB -> 899 MB, 6-8x too large. The curve was
+    # then plotted against a nominal size unrelated to the file measured.
     seed = 42  # Fixed seed for reproducibility
-    subsample_fraction = f"{seed}.{int(ratio * 100)}"
+    subsample_fraction = f"{seed}.{int(round(ratio * 10000)):04d}"
     
     cmd = [
         "samtools", "view",
@@ -136,12 +145,25 @@ def create_bam_subset(source_bam, output_bam, target_size_mb):
     print(f"  Running: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
     
+    # An empty subset would silently produce the flat memory curve this script
+    # exists to show, so check it before measuring anything.
+    counted = subprocess.run(
+        ["samtools", "view", "-c", str(output_bam)],
+        capture_output=True, text=True, check=True
+    )
+    n_reads = int(counted.stdout.strip())
+    if n_reads == 0:
+        raise RuntimeError(
+            f"subset {output_bam} contains 0 reads "
+            f"(sampling fraction -s {subsample_fraction})"
+        )
+    
     # Index BAM file
     print(f"  Indexing BAM file...")
     subprocess.run(["samtools", "index", str(output_bam)], check=True)
     
     actual_size_mb = get_file_size_mb(output_bam)
-    print(f"  ✓ Generation complete: {actual_size_mb:.2f} MB")
+    print(f"  ✓ Generation complete: {actual_size_mb:.2f} MB, {n_reads:,} reads")
     
     return actual_size_mb
 

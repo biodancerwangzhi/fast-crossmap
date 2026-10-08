@@ -15,8 +15,9 @@ Download from [Releases](https://github.com/biodancerwangzhi/fast-crossmap/relea
 ### Linux
 ```bash
 # Download and extract
-wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-linux-x64.tar.gz
-tar -xzf fast-crossmap-linux-x64.tar.gz
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-linux-x86_64.tar.gz
+tar -xzf fcm-0.5.0-linux-x86_64.tar.gz
+cd fcm-0.5.0-linux-x86_64
 chmod +x fast-crossmap
 
 # Test
@@ -25,14 +26,14 @@ chmod +x fast-crossmap
 
 ### macOS (Apple Silicon)
 ```bash
-wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-macos-arm64.tar.gz
-tar -xzf fast-crossmap-macos-arm64.tar.gz
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-macos-arm64.tar.gz
+tar -xzf fcm-0.5.0-macos-arm64.tar.gz
 chmod +x fast-crossmap
 ./fast-crossmap --version
 ```
 
 ### Windows
-1. Download `fast-crossmap-windows-x64.zip` from [Releases](https://github.com/biodancerwangzhi/fast-crossmap/releases)
+1. Download `fcm-0.5.0-windows-x64.zip` from [Releases](https://github.com/biodancerwangzhi/fast-crossmap/releases)
 2. Extract the ZIP file
 3. Run `fast-crossmap.exe --version`
 

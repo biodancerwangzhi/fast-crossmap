@@ -12,22 +12,23 @@ cd fast-crossmap
 
 | Platform | Download |
 |----------|----------|
-| Linux x64 | [fast-crossmap-linux-x64.tar.gz](https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-linux-x64.tar.gz) |
-| Linux ARM64 | [fast-crossmap-linux-arm64.tar.gz](https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-linux-arm64.tar.gz) |
-| macOS Intel | [fast-crossmap-macos-x64.tar.gz](https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-macos-x64.tar.gz) |
-| macOS Apple Silicon | [fast-crossmap-macos-arm64.tar.gz](https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-macos-arm64.tar.gz) |
-| Windows x64 | [fast-crossmap-windows-x64.zip](https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-windows-x64.zip) ⚠️ No BAM support |
+| Linux x86_64 (glibc ≥ 2.34) | [fcm-0.5.0-linux-x86_64.tar.gz](https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-linux-x86_64.tar.gz) |
+| Linux ARM64 | [fcm-0.5.0-linux-arm64.tar.gz](https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-linux-arm64.tar.gz) |
+| macOS Intel | [fcm-0.5.0-macos-x86_64.tar.gz](https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-macos-x86_64.tar.gz) |
+| macOS Apple Silicon | [fcm-0.5.0-macos-arm64.tar.gz](https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-macos-arm64.tar.gz) |
+| Windows x64 | [fcm-0.5.0-windows-x64.zip](https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-windows-x64.zip) ⚠️ No BAM support |
 
 ```bash
 # Linux example:
-wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-linux-x64.tar.gz
-tar -xzf fast-crossmap-linux-x64.tar.gz
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-linux-x86_64.tar.gz
+tar -xzf fcm-0.5.0-linux-x86_64.tar.gz
+sha256sum -c fcm-0.5.0-linux-x86_64/SHA256SUMS   # optional
 ```
 
 **Step 3: Run test**
 ```bash
 # BED conversion test (all platforms)
-./fast-crossmap-linux-x64/fast-crossmap bed \
+./fcm-0.5.0-linux-x86_64/fast-crossmap bed \
     paper/sample_data/hg19ToHg38.over.chain.gz \
     paper/sample_data/sample.bed \
     output.bed
@@ -38,7 +39,7 @@ wc -l output.bed
 wc -l output.bed.unmap    # Unmapped records
 
 # SAM conversion test (Linux/macOS only)
-./fast-crossmap-linux-x64/fast-crossmap bam \
+./fcm-0.5.0-linux-x86_64/fast-crossmap bam \
     paper/sample_data/hg19ToHg38.over.chain.gz \
     paper/sample_data/sample.sam \
     output.sam
@@ -58,6 +59,20 @@ wc -l output.bed.unmap    # Unmapped records
 | `paper/sample_data/sample.bed` | 500 KB | 10,000 BED records (hg19) |
 | `paper/sample_data/sample.sam` | 150 KB | 1,000 SAM reads (hg19) |
 | `paper/sample_data/hg19ToHg38.over.chain.gz` | 1 MB | UCSC chain file |
+
+---
+
+## Multi-threading Scalability (~1 hour)
+
+Measures FastCrossMap's own `-t` scaling per format. Prints `timings.tsv`
+(raw runs) and `summary.tsv` (median / spread / speedup / parallel efficiency).
+This does not change the paper's cross-tool comparison, which is `-t 1`
+throughout (CrossMap has no multithreading).
+
+```bash
+FCM=/path/to/fast-crossmap bash paper/20_benchmark_threads.sh
+FCM=/path/to/fast-crossmap bash paper/21_check_determinism.sh   # output must be byte-identical across -t
+```
 
 ---
 
@@ -87,6 +102,17 @@ python paper/03_benchmark_bam.py        # BAM benchmark
 python paper/05_memory_profile.py       # Memory profiling
 python paper/07_accuracy_analysis.py    # Accuracy validation
 ```
+
+Single-thread vs multi-thread curves for BED/BAM, used for Figure 1(b)/(d):
+```bash
+python paper/02b_benchmark_bed_multithread.py   # -> paper/results/benchmark_bed_multithread.json
+python paper/03b_benchmark_bam_multithread.py   # -> paper/results/benchmark_bam_multithread.json
+```
+
+All benchmark scripts expect the binary at `./target/release/fast-crossmap`
+(build it with `cargo build --release`, or drop a pre-built binary there).
+`02b` / `03b` / `07` also honour `FCM_BIN=/path/to/fast-crossmap`, and the two
+shell scripts (`20`, `21`) honour `FCM=`.
 
 ---
 

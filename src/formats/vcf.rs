@@ -4,14 +4,48 @@
 //!
 //! **Validates: Requirements 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7**
 
-use crate::core::{dna, CoordinateMapper, Strand};
-use memchr::memchr;
-use rayon::prelude::*;
+use crate::core::{chr_template_from_contig_line, dna, update_chrom_id_by_template, CoordinateMapper, Strand};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// File name of the reference genome, as CrossMap reports it in `assembly=`.
+fn ref_basename<P: AsRef<Path>>(ref_genome: &Option<P>) -> Option<String> {
+    ref_genome
+        .as_ref()
+        .and_then(|p| p.as_ref().file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+}
+
+/// Write the target `##contig` block that CrossMap emits in place of `#CHROM`.
+///
+/// The contigs come from the *reference* FASTA (not the chain), are sorted by
+/// name, rewritten into the input's chromosome style, and tagged with the
+/// reference file name — mirroring `cmmodule/mapvcf.py`.
+fn write_contig_header(
+    out: &mut impl Write,
+    ref_reader: Option<&crate::core::fasta::FastaReader>,
+    chr_template: &str,
+    ref_basename: Option<&str>,
+) -> std::io::Result<()> {
+    let Some(rdr) = ref_reader else {
+        return Ok(());
+    };
+    let mut contigs: Vec<(String, usize)> =
+        rdr.references().iter().cloned().zip(rdr.lengths()).collect();
+    contigs.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    for (chrom, len) in contigs {
+        let id = update_chrom_id_by_template(&chrom, chr_template);
+        match ref_basename {
+            Some(assembly) => {
+                writeln!(out, "##contig=<ID={},length={},assembly={}>", id, len, assembly)?
+            }
+            None => writeln!(out, "##contig=<ID={},length={}>", id, len)?,
+        }
+    }
+    Ok(())
+}
 
 /// VCF record representation for output
 #[derive(Debug, Clone)]
@@ -28,131 +62,224 @@ pub struct VcfRecord {
     pub samples: Vec<String>,
 }
 
-/// Zero-copy VCF record view for parsing
-/// Only parses CHROM and POS immediately, other fields are kept as byte slices
+/// Zero-copy VCF record view for parsing.
+///
+/// Only CHROM and POS are decoded eagerly; every other column is addressed
+/// lazily by scanning the original line. Field bounds for the leading
+/// (non-sample) columns are stored inline, so parsing a record performs
+/// **no heap allocation** — which matters because VCF lines routinely carry
+/// thousands of sample columns.
 pub struct VcfRecordView<'a> {
-    /// Original line bytes
-    line: &'a [u8],
-    /// Chromosome name
+    /// Original line (guaranteed valid UTF-8 by the reader)
+    line: &'a str,
+    /// Chromosome name (field 0)
     pub chrom: &'a str,
-    /// Position (1-based)
+    /// Position, 1-based (field 1)
     pub pos: u64,
-    /// Field boundaries (start, end) for lazy access
-    field_bounds: Vec<(usize, usize)>,
+    /// Byte bounds of the first 9 fields (CHROM..FORMAT).
+    /// Only the first `lead_count` entries are populated.
+    lead: [(usize, usize); 9],
+    /// Number of populated entries in `lead`
+    lead_count: usize,
+    /// Byte offset where sample columns begin (immediately after FORMAT),
+    /// or `None` when the record has no sample columns.
+    sample_start: Option<usize>,
     /// Cached INFO parsing
     info_parsed: Cell<bool>,
     info_cache: RefCell<Option<HashMap<String, String>>>,
 }
 
 impl<'a> VcfRecordView<'a> {
-    /// Parse a VCF line with minimal allocation
-    /// Only parses CHROM and POS immediately
+    /// Parse a VCF line without heap allocation.
+    ///
+    /// CHROM and POS are decoded immediately; all other columns are addressed
+    /// lazily via [`field`](Self::field).
     pub fn parse(line: &'a [u8]) -> Result<Self, VcfParseError> {
         if line.is_empty() {
             return Err(VcfParseError::EmptyLine);
         }
+        let s = std::str::from_utf8(line).map_err(|_| VcfParseError::InvalidUtf8("line"))?;
 
-        // Find field boundaries using memchr for tab characters
-        let mut field_bounds = Vec::with_capacity(10);
-        let mut start_pos = 0;
-        let mut pos = 0;
-        
-        while pos < line.len() {
-            if let Some(tab_pos) = memchr(b'\t', &line[pos..]) {
-                let end_pos = pos + tab_pos;
-                field_bounds.push((start_pos, end_pos));
-                start_pos = end_pos + 1;
-                pos = start_pos;
-            } else {
-                // Last field
-                field_bounds.push((start_pos, line.len()));
-                break;
+        // Locate the leading fields (and the start of the sample block) in a
+        // single pass, storing bounds inline instead of in a heap Vec.
+        let mut lead = [(0usize, 0usize); 9];
+        let mut lead_count = 0usize;
+        let mut sample_start = None;
+
+        let mut field_start = 0usize;
+        let mut idx = 0usize;
+        for (i, &b) in line.iter().enumerate() {
+            if b == b'\t' {
+                if idx < 9 {
+                    lead[idx] = (field_start, i);
+                    lead_count = idx + 1;
+                }
+                field_start = i + 1;
+                idx += 1;
+                if idx == 9 {
+                    // Closed the FORMAT column (field 8): sample columns follow.
+                    sample_start = Some(i + 1);
+                    break;
+                }
             }
         }
-        
+        // Final field, when the line does not end with a tab.
+        if sample_start.is_none() && idx < 9 {
+            lead[idx] = (field_start, line.len());
+            lead_count = idx + 1;
+        }
+
         // VCF requires at least 8 fields (CHROM, POS, ID, REF, ALT, QUAL, FILTER, INFO)
-        if field_bounds.len() < 8 {
+        if lead_count < 8 {
             return Err(VcfParseError::TooFewFields {
                 expected: 8,
-                found: field_bounds.len(),
+                found: lead_count,
             });
         }
-        
+
         // Parse CHROM (field 0)
-        let chrom = std::str::from_utf8(&line[field_bounds[0].0..field_bounds[0].1])
-            .map_err(|_| VcfParseError::InvalidUtf8("CHROM"))?;
-        
+        let (cs, ce) = lead[0];
+        let chrom = &s[cs..ce];
+
         // Parse POS (field 1)
-        let pos_str = std::str::from_utf8(&line[field_bounds[1].0..field_bounds[1].1])
-            .map_err(|_| VcfParseError::InvalidUtf8("POS"))?;
+        let (ps, pe) = lead[1];
+        let pos_str = &s[ps..pe];
         let pos: u64 = pos_str
             .parse()
             .map_err(|_| VcfParseError::InvalidNumber("POS", pos_str.to_string()))?;
-        
+
         Ok(Self {
-            line,
+            line: s,
             chrom,
             pos,
-            field_bounds,
+            lead,
+            lead_count,
+            sample_start,
             info_parsed: Cell::new(false),
             info_cache: RefCell::new(None),
         })
     }
-    
-    /// Get the number of fields
+
+    /// Get the number of fields in the record.
     pub fn field_count(&self) -> usize {
-        self.field_bounds.len()
+        match self.sample_start {
+            None => self.lead_count,
+            Some(s) => {
+                let rest = &self.line[s..];
+                if rest.is_empty() {
+                    self.lead_count
+                } else {
+                    self.lead_count + rest.matches('\t').count() + 1
+                }
+            }
+        }
     }
-    
-    /// Get field as string slice (lazy access)
+
+    /// Get field as string slice (lazy access).
     pub fn field(&self, index: usize) -> Option<&'a str> {
-        self.field_bounds.get(index).and_then(|(start, end)| {
-            std::str::from_utf8(&self.line[*start..*end]).ok()
-        })
+        let line = self.line;
+        if index < self.lead_count {
+            let (s, e) = self.lead[index];
+            return Some(&line[s..e]);
+        }
+        // Walk the sample columns to reach `index`.
+        let mut cur = self.sample_start?;
+        let mut n = self.lead_count;
+        while n < index {
+            cur += line[cur..].find('\t')? + 1;
+            n += 1;
+        }
+        if cur > line.len() {
+            return None;
+        }
+        let end = line[cur..].find('\t').map(|t| cur + t).unwrap_or(line.len());
+        Some(&line[cur..end])
     }
-    
+
     /// Get ID field (field 2)
     pub fn id(&self) -> Option<&'a str> {
         self.field(2)
     }
-    
+
     /// Get REF field (field 3)
     pub fn ref_allele(&self) -> Option<&'a str> {
         self.field(3)
     }
-    
+
     /// Get ALT field (field 4)
     pub fn alt_alleles(&self) -> Option<&'a str> {
         self.field(4)
     }
-    
+
     /// Get QUAL field (field 5)
     pub fn qual(&self) -> Option<&'a str> {
         self.field(5)
     }
-    
+
     /// Get FILTER field (field 6)
     pub fn filter(&self) -> Option<&'a str> {
         self.field(6)
     }
-    
+
     /// Get INFO field (field 7)
     pub fn info(&self) -> Option<&'a str> {
         self.field(7)
     }
-    
+
     /// Get FORMAT field (field 8) if present
     pub fn format(&self) -> Option<&'a str> {
         self.field(8)
     }
-    
-    /// Get sample fields (fields 9+)
-    pub fn samples(&self) -> Vec<&'a str> {
-        (9..self.field_count())
-            .filter_map(|i| self.field(i))
-            .collect()
+
+    /// Visit each sample column (fields 9+) in order, without allocating.
+    pub fn for_each_sample<F: FnMut(&'a str)>(&self, mut f: F) {
+        let line = self.line;
+        let mut cur = match self.sample_start {
+            Some(s) if s < line.len() => s,
+            _ => return,
+        };
+        loop {
+            match line[cur..].find('\t') {
+                Some(t) => {
+                    f(&line[cur..cur + t]);
+                    cur += t + 1;
+                }
+                None => {
+                    f(&line[cur..]);
+                    break;
+                }
+            }
+        }
     }
-    
+
+    /// Collect the sample columns (fields 9+) into a vector.
+    pub fn samples(&self) -> Vec<&'a str> {
+        let mut v = Vec::new();
+        self.for_each_sample(|s| v.push(s));
+        v
+    }
+
+    /// The FORMAT column and all sample columns as a single contiguous slice
+    /// (everything from FORMAT to the end of the line), or `None` when the
+    /// record has fewer than 9 fields.
+    ///
+    /// The sample columns are never rewritten during liftover, so a whole-tail
+    /// slice lets the output path copy them with one `push_str` instead of one
+    /// call per sample. Equivalent to `format()` followed by
+    /// [`for_each_sample`](Self::for_each_sample), including the trailing-tab
+    /// and no-sample cases.
+    pub fn format_and_samples(&self) -> Option<&'a str> {
+        if self.lead_count < 9 {
+            return None;
+        }
+        let (fs, fe) = self.lead[8];
+        match self.sample_start {
+            // `sample_start` is only set when at least one byte follows FORMAT's tab.
+            Some(s) if s < self.line.len() => Some(&self.line[fs..]),
+            _ => Some(&self.line[fs..fe]),
+        }
+    }
+
     /// Parse INFO field lazily (only when needed)
     pub fn parse_info(&self) -> HashMap<String, String> {
         if !self.info_parsed.get() {
@@ -234,34 +361,24 @@ pub struct ConversionStats {
     pub failed: usize,
 }
 
-/// Result of converting a single VCF record
-#[derive(Debug)]
-pub enum ConversionResult {
-    /// Successfully mapped
-    Success(String),
-    /// Failed to map with reason
-    Failed(String, String),
-    /// Header line (pass through to output)
-    Header(String),
-    /// Header line (pass through to unmap)
-    UnmapHeader(String),
-    /// Contig header (needs special handling)
-    ContigHeader(String),
-}
-
-/// Convert a single VCF record
+/// Convert a single VCF record.
+///
+/// On success the formatted output line is appended to `out` and `Ok(())` is
+/// returned; otherwise `Err(reason)` carries the failure reason (the caller
+/// supplies the original line when writing the unmap file).
 fn convert_vcf_record(
     view: &VcfRecordView,
     mapper: &CoordinateMapper,
-    ref_genome: Option<&pysam_stub::FastaReader>,
+    ref_genome: Option<&crate::core::fasta::FastaReader>,
     no_comp_allele: bool,
-) -> ConversionResult {
+    out: &mut String,
+) -> Result<(), String> {
     // Map the first position of REF allele (VCF is 1-based)
     let start = view.pos - 1; // Convert to 0-based
     let end = start + 1; // Map only the first position
-    
+
     let result = mapper.map(view.chrom, start, end, Strand::Plus);
-    
+
     match result {
         Some(segments) if segments.len() == 1 => {
             let seg = &segments[0];
@@ -269,74 +386,57 @@ fn convert_vcf_record(
             let target_start = seg.target.start;
             let target_end = seg.target.end;
             let target_strand = seg.target.strand;
-            
+
             // Get original fields
             let ref_allele = view.ref_allele().unwrap_or("N");
             let alt_alleles_str = view.alt_alleles().unwrap_or(".");
-            let _ref_allele_size = ref_allele.len();
-            
-            // Determine variant type
-            let _v_type = view.variant_type();
-            
+
             // Calculate new REF position based on strand and variant type
             let (new_pos, new_ref) = if let Some(ref_reader) = ref_genome {
                 // Get REF from target reference genome
                 let ref_start = target_start;
                 let ref_end = ref_start + 1;
-                
+
                 match ref_reader.fetch(target_chrom, ref_start, ref_end) {
-                    Some(seq) => (target_start + 1, seq.to_uppercase()),
-                    None => {
-                        return ConversionResult::Failed(
-                            reconstruct_line(view),
-                            "Fail(KeyError)".to_string(),
-                        );
-                    }
+                    // `fetch` already returns an uppercased sequence.
+                    Some(seq) => (target_start + 1, seq),
+                    None => return Err("Fail(KeyError)".to_string()),
                 }
             } else {
                 // No reference genome provided, keep original REF
                 (target_start + 1, ref_allele.to_string())
             };
-            
+
             if new_ref.is_empty() {
-                return ConversionResult::Failed(
-                    reconstruct_line(view),
-                    "Fail(KeyError)".to_string(),
-                );
+                return Err("Fail(KeyError)".to_string());
             }
-            
+
             // Process ALT alleles (CrossMap logic)
-            let mut alt_alleles_updated = Vec::new();
+            let mut alt_alleles_updated: Vec<String> = Vec::new();
             for alt_allele in alt_alleles_str.split(',') {
                 if dna::is_dna(alt_allele) {
                     let updated = if ref_allele.len() != alt_allele.len() {
-                        // Indel: replace first nucleotide with new REF, handle rest
-                        if target_strand == Strand::Minus {
-                            // Reverse complement the rest (after first nucleotide)
-                            let first_char = new_ref.chars().next().unwrap_or('N');
-                            if alt_allele.len() > 1 {
+                        // Indel: replace the first nucleotide with the new REF,
+                        // keeping (and, on the minus strand, reverse-complementing)
+                        // the remainder of the allele.
+                        let first_char = new_ref.chars().next().unwrap_or('N');
+                        if alt_allele.len() > 1 {
+                            if target_strand == Strand::Minus {
                                 format!("{}{}", first_char, dna::revcomp(&alt_allele[1..]))
                             } else {
-                                first_char.to_string()
-                            }
-                        } else {
-                            // Forward strand: replace first nucleotide only
-                            let first_char = new_ref.chars().next().unwrap_or('N');
-                            if alt_allele.len() > 1 {
                                 format!("{}{}", first_char, &alt_allele[1..])
-                            } else {
-                                first_char.to_string()
                             }
-                        }
-                    } else {
-                        // Substitution
-                        if target_strand == Strand::Minus {
-                            dna::revcomp(alt_allele)
                         } else {
-                            alt_allele.to_string()
+                            first_char.to_string()
                         }
+                    } else if target_strand == Strand::Minus {
+                        // Substitution on a flipped block
+                        dna::revcomp(alt_allele)
+                    } else {
+                        // Forward-strand substitution
+                        alt_allele.to_string()
                     };
-                    
+
                     // Add to list (will filter REF==ALT later, matching CrossMap)
                     alt_alleles_updated.push(updated);
                 } else {
@@ -344,28 +444,23 @@ fn convert_vcf_record(
                     alt_alleles_updated.push(alt_allele.to_string());
                 }
             }
-            
-            // Filter out ALT alleles that equal REF (CrossMap: alt_alleles_updated = [i for i in alt_alleles_updated if i != ref_allele])
+
+            // Filter out ALT alleles that equal REF
+            // (CrossMap: alt_alleles_updated = [i for i in alt_alleles_updated if i != ref_allele])
             alt_alleles_updated.retain(|alt| alt != &new_ref);
-            
+
             // CrossMap behavior: when alt_alleles_updated is empty after filtering,
             // it sets fields[4] = "" (empty string), then checks if fields[3] != fields[4].
             // Since REF != "", the record is output with empty ALT.
-            // We match this behavior exactly.
-            
-            // Check REF == ALT for single allele case (unless noCompAllele is set)
-            // CrossMap: if fields[3] != fields[4] (after join)
-            // Note: when alt_alleles_updated is empty, join produces "", and REF != "" is true
             let alt_joined = alt_alleles_updated.join(",");
             if !no_comp_allele && alt_joined == new_ref {
-                return ConversionResult::Failed(
-                    reconstruct_line(view),
-                    "Fail(REF==ALT)".to_string(),
-                );
+                return Err("Fail(REF==ALT)".to_string());
             }
-            
-            // Build output line
-            let output = format_output_line(
+
+            // Format the output line in place, appending to the caller's
+            // reusable buffer so a record costs no allocation of its own.
+            write_output_line(
+                out,
                 view,
                 target_chrom,
                 new_pos,
@@ -373,214 +468,97 @@ fn convert_vcf_record(
                 &alt_alleles_updated,
                 target_end,
             );
-            
-            ConversionResult::Success(output)
+
+            Ok(())
         }
-        Some(segments) if segments.len() > 1 => {
-            // Multiple mappings
-            ConversionResult::Failed(
-                reconstruct_line(view),
-                "Fail(Multiple_hits)".to_string(),
-            )
-        }
-        _ => {
-            // No mapping found
-            ConversionResult::Failed(
-                reconstruct_line(view),
-                "Fail(Unmap)".to_string(),
-            )
-        }
+        // Multiple mappings
+        Some(_) => Err("Fail(Multiple_hits)".to_string()),
+        // No mapping found
+        None => Err("Fail(Unmap)".to_string()),
     }
 }
 
-/// Update INFO field with new END value
-/// CrossMap uses: re.sub(r'END\=\d+', 'END=' + str(target_end), fields[7])
-fn update_info_end(info: &str, new_end: u64) -> String {
-    // Find END= pattern and replace the value
-    let mut result = String::with_capacity(info.len() + 20);
-    let mut i = 0;
+/// Append `info` to `out`, replacing every `END=<digits>` value with `new_end`.
+///
+/// Mirrors CrossMap: `re.sub(r'END=\d+', 'END=' + str(target_end), fields[7])`.
+fn write_info_with_end(out: &mut String, info: &str, new_end: u64) {
+    use std::fmt::Write as _;
+
     let bytes = info.as_bytes();
-    
-    while i < bytes.len() {
-        // Look for "END=" pattern
-        if i + 4 <= bytes.len() && &bytes[i..i+4] == b"END=" {
-            result.push_str("END=");
-            i += 4;
-            // Skip the old number
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
+    let mut last = 0usize;
+    let mut cursor = 0usize;
+    while cursor + 4 < bytes.len() {
+        // Match "END=" followed by at least one digit.
+        if &bytes[cursor..cursor + 4] == b"END=" && bytes[cursor + 4].is_ascii_digit() {
+            out.push_str(&info[last..cursor]);
+            out.push_str("END=");
+            cursor += 4;
+            while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+                cursor += 1;
             }
-            // Write new value
-            result.push_str(&new_end.to_string());
+            let _ = write!(out, "{}", new_end);
+            last = cursor;
         } else {
-            result.push(bytes[i] as char);
-            i += 1;
+            cursor += 1;
         }
     }
-    
-    result
+    // `last` is always a char boundary (it follows ASCII "END=" or digits).
+    out.push_str(&info[last..]);
 }
 
-/// Format output line for a successfully mapped VCF record
-fn format_output_line(
+/// Append a successfully mapped VCF record to `out`: every column, from CHROM
+/// through the sample block.
+///
+/// Appends rather than returning a fresh `String` so a caller converting a whole
+/// file keeps one buffer and reuses its capacity from record to record.
+fn write_output_line(
+    out: &mut String,
     view: &VcfRecordView,
     chrom: &str,
     pos: u64,
     ref_allele: &str,
     alt_alleles: &[String],
     target_end: u64,
-) -> String {
-    let mut output = String::with_capacity(512);
-    
+) {
+    use std::fmt::Write as _;
+
     // CHROM
-    output.push_str(chrom);
-    output.push('\t');
-    
+    out.push_str(chrom);
+    out.push('\t');
     // POS
-    output.push_str(&pos.to_string());
-    output.push('\t');
-    
+    let _ = write!(out, "{}", pos);
+    out.push('\t');
     // ID
-    output.push_str(view.id().unwrap_or("."));
-    output.push('\t');
-    
+    out.push_str(view.id().unwrap_or("."));
+    out.push('\t');
     // REF
-    output.push_str(ref_allele);
-    output.push('\t');
-    
+    out.push_str(ref_allele);
+    out.push('\t');
     // ALT
-    output.push_str(&alt_alleles.join(","));
-    output.push('\t');
-    
-    // QUAL
-    output.push_str(view.qual().unwrap_or("."));
-    output.push('\t');
-    
-    // FILTER
-    output.push_str(view.filter().unwrap_or("."));
-    output.push('\t');
-    
-    // INFO - update END if present (CrossMap behavior)
-    let info = view.info().unwrap_or(".");
-    let updated_info = update_info_end(info, target_end);
-    output.push_str(&updated_info);
-    
-    // FORMAT and samples
-    if let Some(format) = view.format() {
-        output.push('\t');
-        output.push_str(format);
-        
-        for sample in view.samples() {
-            output.push('\t');
-            output.push_str(sample);
-        }
-    }
-    
-    output
-}
-
-/// Reconstruct original line from view
-fn reconstruct_line(view: &VcfRecordView) -> String {
-    let mut output = String::with_capacity(512);
-    
-    for i in 0..view.field_count() {
+    for (i, alt) in alt_alleles.iter().enumerate() {
         if i > 0 {
-            output.push('\t');
+            out.push(',');
         }
-        if let Some(field) = view.field(i) {
-            output.push_str(field);
-        }
+        out.push_str(alt);
     }
-    
-    output
-}
-
-
-/// Stub module for FASTA reading (placeholder for pysam-like functionality)
-pub mod pysam_stub {
-    use std::collections::HashMap;
-    use std::io::{BufRead, BufReader};
-    use std::path::Path;
-    
-    /// Simple FASTA reader for reference genome
-    pub struct FastaReader {
-        sequences: HashMap<String, Vec<u8>>,
-        chrom_order: Vec<String>,
-    }
-    
-    impl FastaReader {
-        /// Open a FASTA file and load all sequences
-        pub fn open<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
-            let file = std::fs::File::open(path)?;
-            let reader = BufReader::new(file);
-            let mut sequences = HashMap::new();
-            let mut chrom_order = Vec::new();
-            let mut current_name = String::new();
-            let mut current_seq = Vec::new();
-            
-            for line in reader.lines() {
-                let line = line?;
-                if line.starts_with('>') {
-                    if !current_name.is_empty() {
-                        chrom_order.push(current_name.clone());
-                        sequences.insert(current_name.clone(), current_seq.clone());
-                    }
-                    current_name = line[1..].split_whitespace().next().unwrap_or("").to_string();
-                    current_seq.clear();
-                } else {
-                    current_seq.extend(line.trim().bytes());
-                }
-            }
-            
-            if !current_name.is_empty() {
-                chrom_order.push(current_name.clone());
-                sequences.insert(current_name, current_seq);
-            }
-            
-            Ok(Self { sequences, chrom_order })
-        }
-        
-        /// Fetch a region from the reference (0-based, half-open)
-        pub fn fetch(&self, chrom: &str, start: u64, end: u64) -> Option<String> {
-            // Try with and without chr prefix
-            let seq = self.sequences.get(chrom)
-                .or_else(|| {
-                    if chrom.starts_with("chr") {
-                        self.sequences.get(&chrom[3..])
-                    } else {
-                        self.sequences.get(&format!("chr{}", chrom))
-                    }
-                })?;
-            
-            let start = start as usize;
-            let end = (end as usize).min(seq.len());
-            
-            if start >= seq.len() {
-                return None;
-            }
-            
-            Some(String::from_utf8_lossy(&seq[start..end]).to_string())
-        }
-        
-        /// Get chromosome names in order
-        pub fn references(&self) -> Vec<&str> {
-            self.chrom_order.iter().map(|s| s.as_str()).collect()
-        }
-        
-        /// Get chromosome lengths in order
-        pub fn lengths(&self) -> Vec<usize> {
-            self.chrom_order.iter()
-                .filter_map(|name| self.sequences.get(name).map(|s| s.len()))
-                .collect()
-        }
+    out.push('\t');
+    // QUAL
+    out.push_str(view.qual().unwrap_or("."));
+    out.push('\t');
+    // FILTER
+    out.push_str(view.filter().unwrap_or("."));
+    out.push('\t');
+    // INFO - update END if present (CrossMap behavior)
+    write_info_with_end(out, view.info().unwrap_or("."), target_end);
+    // FORMAT and sample columns, carried through verbatim as one slice.
+    if let Some(tail) = view.format_and_samples() {
+        out.push('\t');
+        out.push_str(tail);
     }
 }
-
-/// Chunk size for parallel processing
-const CHUNK_SIZE: usize = 10000;
 
 /// Convert a VCF file using the coordinate mapper
-/// 
+///
 /// # Arguments
 /// * `input` - Input VCF file path
 /// * `output` - Output VCF file path for successfully mapped records
@@ -607,7 +585,7 @@ pub fn convert_vcf<P: AsRef<Path>>(
     }
 }
 
-/// Sequential VCF conversion (single-threaded)
+/// Sequential VCF conversion (single-threaded, line-by-line)
 fn convert_vcf_sequential<P: AsRef<Path>>(
     input: P,
     output: P,
@@ -616,43 +594,50 @@ fn convert_vcf_sequential<P: AsRef<Path>>(
     no_comp_allele: bool,
 ) -> Result<ConversionStats, VcfParseError> {
     let input_file = std::fs::File::open(input.as_ref())?;
-    let reader = BufReader::with_capacity(128 * 1024, input_file);
-    
+    let mut reader: Box<dyn BufRead> = if input.as_ref().extension().and_then(|e| e.to_str()) == Some("gz") {
+        Box::new(BufReader::with_capacity(
+            128 * 1024,
+            flate2::read::MultiGzDecoder::new(input_file),
+        ))
+    } else {
+        Box::new(BufReader::with_capacity(128 * 1024, input_file))
+    };
+
     let output_path = output.as_ref();
     let unmap_path = output_path.with_extension("vcf.unmap");
-    
-    // Use BufWriter for performance
+
     let mut output_file = BufWriter::with_capacity(128 * 1024, std::fs::File::create(output_path)?);
     let mut unmap_file = BufWriter::with_capacity(64 * 1024, std::fs::File::create(&unmap_path)?);
-    
-    // Load reference genome if provided
+
+    let assembly = ref_basename(&ref_genome);
     let ref_reader = ref_genome
-        .map(|p| pysam_stub::FastaReader::open(p.as_ref()))
+        .map(|p| crate::core::fasta::FastaReader::open(p.as_ref()))
         .transpose()?;
-    
+
+    // Chromosome style of the input's `##contig` lines; CrossMap applies it to
+    // every target contig it writes.
+    let mut chr_template = "chr1";
+
     let mut stats = ConversionStats::default();
     let mut line_buf = String::with_capacity(4096);
-    let mut reader = reader;
-    
-    // Track if we've seen the #CHROM header
-    let mut _seen_chrom_header = false;
-    
+    // Reusable scratch buffer for building output lines without per-line allocation.
+    let mut scratch = String::with_capacity(4096);
+
     loop {
         line_buf.clear();
         let bytes_read = reader.read_line(&mut line_buf)?;
         if bytes_read == 0 {
             break;
         }
-        
+
         let line = line_buf.trim_end();
-        
+
         if line.is_empty() {
             continue;
         }
-        
-        // Handle header lines
+
         if line.starts_with('#') {
-            if line.starts_with("##fileformat") 
+            if line.starts_with("##fileformat")
                 || line.starts_with("##INFO")
                 || line.starts_with("##FILTER")
                 || line.starts_with("##FORMAT")
@@ -660,69 +645,94 @@ fn convert_vcf_sequential<P: AsRef<Path>>(
                 || line.starts_with("##SAMPLE")
                 || line.starts_with("##PEDIGREE")
             {
-                // Write to both files
                 writeln!(output_file, "{}", line)?;
                 writeln!(unmap_file, "{}", line)?;
             } else if line.starts_with("##assembly") || line.starts_with("##contig") {
-                // Write only to unmap file
+                if line.starts_with("##contig") {
+                    chr_template = chr_template_from_contig_line(line);
+                }
                 writeln!(unmap_file, "{}", line)?;
             } else if line.starts_with("#CHROM") {
-                _seen_chrom_header = true;
-                // Write contig headers for target assembly
-                if let Some(ref reader) = ref_reader {
-                    for (chrom, len) in reader.references().iter().zip(reader.lengths()) {
-                        writeln!(output_file, "##contig=<ID={},length={}>", chrom, len)?;
-                    }
-                }
-                // Write liftover metadata
+                write_contig_header(
+                    &mut output_file,
+                    ref_reader.as_ref(),
+                    chr_template,
+                    assembly.as_deref(),
+                )?;
                 writeln!(output_file, "##liftOverProgram=FastCrossMap")?;
-                // Write column header to both files
                 writeln!(output_file, "{}", line)?;
                 writeln!(unmap_file, "{}", line)?;
             } else {
-                // Other header lines - write to output only
                 writeln!(output_file, "{}", line)?;
             }
             continue;
         }
-        
+
         stats.total += 1;
-        
-        // Parse the VCF record
+
         match VcfRecordView::parse(line.as_bytes()) {
             Ok(view) => {
-                match convert_vcf_record(&view, mapper, ref_reader.as_ref(), no_comp_allele) {
-                    ConversionResult::Success(output_line) => {
-                        writeln!(output_file, "{}", output_line)?;
+                scratch.clear();
+                match convert_vcf_record(
+                    &view,
+                    mapper,
+                    ref_reader.as_ref(),
+                    no_comp_allele,
+                    &mut scratch,
+                ) {
+                    Ok(()) => {
+                        output_file.write_all(scratch.as_bytes())?;
+                        output_file.write_all(b"\n")?;
                         stats.success += 1;
                     }
-                    ConversionResult::Failed(original, reason) => {
-                        writeln!(unmap_file, "{}\t{}", original, reason)?;
+                    Err(reason) => {
+                        write!(unmap_file, "{}\t{}\n", line, reason)?;
                         stats.failed += 1;
-                    }
-                    ConversionResult::Header(h) => {
-                        writeln!(output_file, "{}", h)?;
-                    }
-                    ConversionResult::UnmapHeader(h) => {
-                        writeln!(unmap_file, "{}", h)?;
-                    }
-                    ConversionResult::ContigHeader(_) => {
-                        // Already handled above
                     }
                 }
             }
             Err(_) => {
-                // Invalid VCF line - write to unmap file
-                writeln!(unmap_file, "{}\tFail(ParseError)", line)?;
+                write!(unmap_file, "{}\tFail(ParseError)\n", line)?;
                 stats.failed += 1;
             }
         }
     }
-    
+
     Ok(stats)
 }
 
-/// Parallel VCF conversion using rayon
+/// Strip trailing ASCII whitespace from a line, matching the `str::trim_end()`
+/// the sequential path applies to each line it reads.
+#[inline]
+fn trim_line(buf: &[u8]) -> &[u8] {
+    let mut end = buf.len();
+    while end > 0 && buf[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    &buf[..end]
+}
+
+/// Upper bound on the bytes of raw input held in one batch.
+///
+/// Record length varies by three orders of magnitude across inputs (a
+/// sites-only VCF line is ~50 bytes; a 2504-sample line is ~10 KB), so the
+/// batch is capped by *bytes* as well as by record count. Without this a
+/// many-sample VCF would hold tens of megabytes per batch in flight.
+const MAX_BATCH_BYTES: usize = 4 << 20;
+
+/// Parallel VCF conversion.
+///
+/// Reading, converting and writing run as one overlapped pipeline (see
+/// [`crate::core::pipeline`]): a reader thread parses and decompresses lines
+/// into batches, the rayon pool converts a whole batch at a time, and the
+/// calling thread writes results out in input order. The bounded queues keep
+/// peak memory proportional to the batch size rather than to the input size.
+///
+/// The conversion stage reuses one [`RecordSink`] per rayon partition rather
+/// than allocating a `VcfOut` per record: a mapped record's line is formatted
+/// into the sink's scratch (cleared, not freed, between records) and appended to
+/// the sink's payload in place, which is what keeps the parallel path's CPU cost
+/// near the sequential path's instead of well above it.
 fn convert_vcf_parallel<P: AsRef<Path>>(
     input: P,
     output: P,
@@ -731,137 +741,168 @@ fn convert_vcf_parallel<P: AsRef<Path>>(
     no_comp_allele: bool,
     threads: usize,
 ) -> Result<ConversionStats, VcfParseError> {
-    // Configure rayon thread pool
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .map_err(|e| VcfParseError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Failed to create thread pool: {}", e)
-        )))?;
-    
-    // Read all lines
+    use crate::core::pipeline::{
+        batch_size, run_ordered_pipeline_chunked, Batch, LineBatch, OutBatch, RecordSink,
+    };
+
     let input_file = std::fs::File::open(input.as_ref())?;
-    let reader = BufReader::with_capacity(128 * 1024, input_file);
-    
-    let mut header_lines_output = Vec::new();
-    let mut header_lines_unmap = Vec::new();
-    let mut data_lines = Vec::new();
-    
-    // Load reference genome if provided
+    let mut reader: Box<dyn BufRead + Send> =
+        if input.as_ref().extension().and_then(|e| e.to_str()) == Some("gz") {
+            Box::new(BufReader::with_capacity(
+                128 * 1024,
+                flate2::read::MultiGzDecoder::new(input_file),
+            ))
+        } else {
+            Box::new(BufReader::with_capacity(128 * 1024, input_file))
+        };
+
+    let assembly = ref_basename(&ref_genome);
     let ref_reader = ref_genome
-        .map(|p| pysam_stub::FastaReader::open(p.as_ref()))
+        .map(|p| crate::core::fasta::FastaReader::open(p.as_ref()))
         .transpose()?;
-    
-    for line_result in reader.lines() {
-        let line = line_result?;
+
+    let output_path = output.as_ref();
+    let unmap_path = output_path.with_extension("vcf.unmap");
+    let mut output_file = BufWriter::with_capacity(128 * 1024, std::fs::File::create(output_path)?);
+    let mut unmap_file = BufWriter::with_capacity(64 * 1024, std::fs::File::create(&unmap_path)?);
+
+    // Chromosome style of the input's `##contig` lines; CrossMap applies it to
+    // every target contig it writes.
+    let mut chr_template = "chr1";
+
+    // Phase 1: write the headers, stopping at the first data line.
+    let mut line_buf: Vec<u8> = Vec::with_capacity(4096);
+    let mut pending: Option<Vec<u8>> = None;
+    loop {
+        line_buf.clear();
+        if reader.read_until(b'\n', &mut line_buf)? == 0 {
+            break;
+        }
+        let line = trim_line(&line_buf);
         if line.is_empty() {
             continue;
         }
-        
-        if line.starts_with('#') {
-            if line.starts_with("##fileformat") 
-                || line.starts_with("##INFO")
-                || line.starts_with("##FILTER")
-                || line.starts_with("##FORMAT")
-                || line.starts_with("##ALT")
-                || line.starts_with("##SAMPLE")
-                || line.starts_with("##PEDIGREE")
-            {
-                header_lines_output.push(line.clone());
-                header_lines_unmap.push(line);
-            } else if line.starts_with("##assembly") || line.starts_with("##contig") {
-                header_lines_unmap.push(line);
-            } else if line.starts_with("#CHROM") {
-                // Add contig headers for target assembly
-                if let Some(ref reader) = ref_reader {
-                    for (chrom, len) in reader.references().iter().zip(reader.lengths()) {
-                        header_lines_output.push(format!("##contig=<ID={},length={}>", chrom, len));
-                    }
-                }
-                header_lines_output.push("##liftOverProgram=FastCrossMap".to_string());
-                header_lines_output.push(line.clone());
-                header_lines_unmap.push(line);
-            } else {
-                header_lines_output.push(line);
+        if line[0] != b'#' {
+            pending = Some(line.to_vec());
+            break;
+        }
+
+        let text = std::str::from_utf8(line)
+            .map_err(|_| VcfParseError::InvalidUtf8("line"))?;
+        if text.starts_with("##fileformat")
+            || text.starts_with("##INFO")
+            || text.starts_with("##FILTER")
+            || text.starts_with("##FORMAT")
+            || text.starts_with("##ALT")
+            || text.starts_with("##SAMPLE")
+            || text.starts_with("##PEDIGREE")
+        {
+            writeln!(output_file, "{}", text)?;
+            writeln!(unmap_file, "{}", text)?;
+        } else if text.starts_with("##assembly") || text.starts_with("##contig") {
+            if text.starts_with("##contig") {
+                chr_template = chr_template_from_contig_line(text);
             }
+            writeln!(unmap_file, "{}", text)?;
+        } else if text.starts_with("#CHROM") {
+            write_contig_header(
+                &mut output_file,
+                ref_reader.as_ref(),
+                chr_template,
+                assembly.as_deref(),
+            )?;
+            writeln!(output_file, "##liftOverProgram=FastCrossMap")?;
+            writeln!(output_file, "{}", text)?;
+            writeln!(unmap_file, "{}", text)?;
         } else {
-            data_lines.push(line);
+            writeln!(output_file, "{}", text)?;
         }
     }
-    
-    // Atomic counters for stats
-    let total = AtomicUsize::new(0);
-    let success = AtomicUsize::new(0);
-    let failed = AtomicUsize::new(0);
-    
-    // Process in parallel
-    let results: Vec<(Vec<String>, Vec<String>)> = pool.install(|| {
-        data_lines
-            .par_chunks(CHUNK_SIZE)
-            .map(|chunk| {
-                let mut success_lines = Vec::with_capacity(chunk.len());
-                let mut failed_lines = Vec::new();
-                
-                for line in chunk {
-                    total.fetch_add(1, Ordering::Relaxed);
-                    
-                    match VcfRecordView::parse(line.as_bytes()) {
-                        Ok(view) => {
-                            match convert_vcf_record(&view, mapper, ref_reader.as_ref(), no_comp_allele) {
-                                ConversionResult::Success(output_line) => {
-                                    success_lines.push(output_line);
-                                    success.fetch_add(1, Ordering::Relaxed);
-                                }
-                                ConversionResult::Failed(original, reason) => {
-                                    failed_lines.push(format!("{}\t{}", original, reason));
-                                    failed.fetch_add(1, Ordering::Relaxed);
-                                }
-                                _ => {}
-                            }
-                        }
-                        Err(_) => {
-                            failed_lines.push(format!("{}\tFail(ParseError)", line));
-                            failed.fetch_add(1, Ordering::Relaxed);
-                        }
+
+    // Phase 2: stream the data lines through the pipeline.
+    let mut stats = ConversionStats::default();
+    let mut first = pending;
+
+    run_ordered_pipeline_chunked(
+        threads,
+        |line: &[u8], sink: &mut RecordSink| {
+            match VcfRecordView::parse(line) {
+                Ok(view) => match convert_vcf_record(
+                    &view,
+                    mapper,
+                    ref_reader.as_ref(),
+                    no_comp_allele,
+                    sink.text_mut(),
+                ) {
+                    Ok(()) => {
+                        sink.flush_text();
+                        true
                     }
+                    Err(reason) => {
+                        sink.write(reason.as_bytes());
+                        false
+                    }
+                },
+                Err(_) => {
+                    sink.write(b"Fail(ParseError)");
+                    false
                 }
-                
-                (success_lines, failed_lines)
-            })
-            .collect()
-    });
-    
-    // Write output files with BufWriter for performance
-    let output_path = output.as_ref();
-    let unmap_path = output_path.with_extension("vcf.unmap");
-    
-    let mut output_file = BufWriter::with_capacity(128 * 1024, std::fs::File::create(output_path)?);
-    let mut unmap_file = BufWriter::with_capacity(64 * 1024, std::fs::File::create(&unmap_path)?);
-    
-    // Write headers
-    for header in &header_lines_output {
-        writeln!(output_file, "{}", header)?;
-    }
-    for header in &header_lines_unmap {
-        writeln!(unmap_file, "{}", header)?;
-    }
-    
-    // Write results (maintaining chunk order)
-    for (success_lines, failed_lines) in results {
-        for line in success_lines {
-            writeln!(output_file, "{}", line)?;
-        }
-        for line in failed_lines {
-            writeln!(unmap_file, "{}", line)?;
-        }
-    }
-    
-    Ok(ConversionStats {
-        total: total.load(Ordering::Relaxed),
-        success: success.load(Ordering::Relaxed),
-        failed: failed.load(Ordering::Relaxed),
-    })
+            }
+        },
+        // Fill one batch. The line is appended to the batch buffer directly —
+        // no per-record allocation and no second copy of the line.
+        |batch: &mut LineBatch| {
+            if let Some(line) = first.take() {
+                batch.push_line(&line);
+            }
+            while batch.len() < batch_size() && batch.buffer.len() < MAX_BATCH_BYTES {
+                line_buf.clear();
+                if reader.read_until(b'\n', &mut line_buf)? == 0 {
+                    break;
+                }
+                let line = trim_line(&line_buf);
+                if line.is_empty() {
+                    continue;
+                }
+                batch.push_line(line);
+            }
+            Ok(batch.len())
+        },
+        |batch: &LineBatch, results: &OutBatch| {
+            // A short result batch would silently drop records through `zip`,
+            // so check the count rather than trusting it.
+            if results.len() != batch.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!(
+                        "internal error: {} converted records for {} input lines",
+                        results.len(),
+                        batch.len()
+                    ),
+                ));
+            }
+            for ((start, end), (payload, mapped)) in batch.lines.iter().zip(results.iter()) {
+                if mapped {
+                    output_file.write_all(payload)?;
+                    output_file.write_all(b"\n")?;
+                    stats.success += 1;
+                } else {
+                    // For a mapped-but-rejected record this matches the
+                    // sequential path, which records the reason it reconstructed;
+                    // a parse failure writes the same `Fail(ParseError)` marker.
+                    unmap_file.write_all(&batch.buffer[*start..*end])?;
+                    unmap_file.write_all(b"\t")?;
+                    unmap_file.write_all(payload)?;
+                    unmap_file.write_all(b"\n")?;
+                    stats.failed += 1;
+                }
+            }
+            stats.total += batch.len();
+            Ok(())
+        },
+    )?;
+
+    Ok(stats)
 }
 
 #[cfg(test)]

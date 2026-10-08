@@ -216,6 +216,54 @@ pub fn update_chrom_id(chrom: &str, style: ChromStyle) -> String {
     }
 }
 
+/// Derive CrossMap's `chr_template` from an input `##contig` line.
+///
+/// CrossMap scans the *input's* contig declarations and remembers whether they
+/// used the `chr` prefix; that style is then applied to every target contig it
+/// writes into the output header. A line containing `ID=chr` means long style.
+///
+/// Reference: `cmmodule/mapvcf.py` (`chr_template = 'chr1'` / `'1'`).
+pub fn chr_template_from_contig_line(line: &str) -> &'static str {
+    if line.contains("ID=chr") {
+        "chr1"
+    } else {
+        "1"
+    }
+}
+
+/// Rewrite a chromosome ID to match a CrossMap-style template.
+///
+/// This is `cmmodule.utils.update_chromID(c_temp, c_target, 'a')`: the target is
+/// written in the same style as the template, so a `chr`-prefixed template adds
+/// the prefix and an unprefixed one removes it.
+///
+/// Only a leading `chr` is stripped (unlike CrossMap's `str.replace`, which
+/// removes every occurrence); for real contig names the two agree.
+///
+/// # Examples
+/// ```
+/// use fast_crossmap::core::update_chrom_id_by_template;
+///
+/// assert_eq!(update_chrom_id_by_template("chr1", "1"), "1");
+/// assert_eq!(update_chrom_id_by_template("chrUn_GL000195v1", "1"), "Un_GL000195v1");
+/// assert_eq!(update_chrom_id_by_template("1", "chr1"), "chr1");
+/// assert_eq!(update_chrom_id_by_template("chr1", "chr1"), "chr1");
+/// ```
+pub fn update_chrom_id_by_template(chrom: &str, template: &str) -> String {
+    let has_chr = chrom.len() > 3 && chrom[..3].eq_ignore_ascii_case("chr");
+    if template.starts_with("chr") {
+        if has_chr {
+            chrom.to_string()
+        } else {
+            format!("chr{}", chrom)
+        }
+    } else if has_chr {
+        chrom[3..].to_string()
+    } else {
+        chrom.to_string()
+    }
+}
+
 /// Normalize chromosome name for lookup (handles chr1/1/CHR1 variants)
 /// 
 /// Returns a canonical form for comparison purposes.
@@ -269,7 +317,7 @@ pub fn chroms_equivalent(chrom1: &str, chrom2: &str) -> bool {
     normalize_chrom(chrom1) == normalize_chrom(chrom2)
 }
 
-/// Result of coordinate mapping
+/// Result of coordinate mapping (chromosome, position, strand).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapResult {
     pub chrom: String,
@@ -278,12 +326,12 @@ pub struct MapResult {
     pub strand: Strand,
 }
 
-/// A single mapping segment (source region + target region)
+/// A single mapping segment pairing a source region with its target region.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MappingSegment {
     /// Source region that was mapped
     pub source: MapResult,
-    /// Target region after mapping
+    /// Corresponding target region after liftover
     pub target: MapResult,
 }
 
@@ -305,7 +353,11 @@ pub fn intersect_intervals(start1: u64, end1: u64, start2: u64, end2: u64) -> Op
     Some((start1.max(start2), end1.min(end2)))
 }
 
-/// Coordinate mapper using chain index
+/// Coordinate mapper using chain index.
+///
+/// The primary API for lifting over genomic coordinates between assemblies.
+/// Wraps a [`ChainIndex`] and applies chromosome style formatting and
+/// compatibility mode settings to each mapping operation.
 pub struct CoordinateMapper {
     index: ChainIndex,
     chrom_style: ChromStyle,
@@ -313,6 +365,7 @@ pub struct CoordinateMapper {
 }
 
 impl CoordinateMapper {
+    /// Create a new mapper with default compatibility mode.
     pub fn new(index: ChainIndex, chrom_style: ChromStyle) -> Self {
         Self { 
             index, 

@@ -168,7 +168,7 @@ fn test_region_conversion_with_crossmap() {
     use std::io::Write;
     use tempfile::tempdir;
     
-    let chain_file = Path::new("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_file = Path::new("tests/data/GRCh37_to_GRCh38.chain.gz");
     if !chain_file.exists() {
         eprintln!("Chain file not found, skipping CrossMap comparison test");
         return;

@@ -5,13 +5,12 @@
 //!
 //! **Validates: Requirements 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 7.7**
 
-use crate::core::{dna, CoordinateMapper, Strand};
+use crate::core::{chr_template_from_contig_line, dna, update_chrom_id_by_template, CoordinateMapper, Strand};
 use memchr::memchr;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// GVCF parsing error
 #[derive(Debug, Clone)]
@@ -215,74 +214,6 @@ impl<'a> GvcfRecordView<'a> {
 }
 
 
-/// Stub for FASTA reader (reference genome access)
-/// In production, this would use rust-htslib or similar
-pub mod fasta_stub {
-    use std::path::Path;
-    use std::collections::HashMap;
-    use std::io::{BufRead, BufReader};
-    
-    /// Simple FASTA reader for reference genome
-    /// Loads all sequences into memory at once for fast access
-    pub struct FastaReader {
-        /// Chromosome sequences
-        sequences: HashMap<String, Vec<u8>>,
-    }
-    
-    impl FastaReader {
-        /// Open a FASTA file and load all sequences into memory
-        pub fn open<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
-            let file = std::fs::File::open(path)?;
-            let reader = BufReader::new(file);
-            let mut sequences = HashMap::new();
-            let mut current_name = String::new();
-            let mut current_seq = Vec::new();
-            
-            for line in reader.lines() {
-                let line = line?;
-                if line.starts_with('>') {
-                    if !current_name.is_empty() {
-                        sequences.insert(current_name.clone(), current_seq.clone());
-                    }
-                    current_name = line[1..].split_whitespace().next().unwrap_or("").to_string();
-                    current_seq.clear();
-                } else {
-                    current_seq.extend(line.trim().bytes());
-                }
-            }
-            
-            if !current_name.is_empty() {
-                sequences.insert(current_name, current_seq);
-            }
-            
-            Ok(Self { sequences })
-        }
-        
-        /// Fetch sequence at given position (0-based, half-open)
-        pub fn fetch(&self, chrom: &str, start: u64, end: u64) -> Option<String> {
-            // Try with and without chr prefix
-            let seq = self.sequences.get(chrom)
-                .or_else(|| {
-                    if chrom.starts_with("chr") {
-                        self.sequences.get(&chrom[3..])
-                    } else {
-                        self.sequences.get(&format!("chr{}", chrom))
-                    }
-                })?;
-            
-            let start = start as usize;
-            let end = (end as usize).min(seq.len());
-            
-            if start >= seq.len() {
-                return None;
-            }
-            
-            Some(String::from_utf8_lossy(&seq[start..end]).to_string())
-        }
-    }
-}
-
-
 /// Conversion statistics
 #[derive(Debug, Clone, Default)]
 pub struct ConversionStats {
@@ -340,7 +271,7 @@ fn update_info_end(info: &str, new_end: u64) -> String {
 fn convert_gvcf_record(
     view: &GvcfRecordView,
     mapper: &CoordinateMapper,
-    ref_genome: Option<&fasta_stub::FastaReader>,
+    ref_genome: Option<&crate::core::fasta::FastaReader>,
     no_comp_allele: bool,
 ) -> ConversionResult {
     // Check if this is a non-variant block (has END=)
@@ -484,34 +415,38 @@ fn convert_gvcf_record(
 }
 
 
-/// Update contig header with target assembly information
-fn update_contig_header(line: &str, mapper: &CoordinateMapper) -> String {
-    // Parse contig header: ##contig=<ID=chr1,length=248956422>
-    if !line.starts_with("##contig=") {
-        return line.to_string();
+/// Strip trailing ASCII whitespace from a line, matching the `str::trim_end()`
+/// the previous line-based implementation applied to each line it read.
+#[inline]
+fn trim_ascii_end(buf: &[u8]) -> &[u8] {
+    let mut end = buf.len();
+    while end > 0 && buf[end - 1].is_ascii_whitespace() {
+        end -= 1;
     }
-    
-    // Extract ID from header
-    let id_start = line.find("ID=").map(|i| i + 3);
-    let id_end = id_start.and_then(|s| {
-        line[s..].find(',').or_else(|| line[s..].find('>')).map(|e| s + e)
-    });
-    
-    if let (Some(start), Some(end)) = (id_start, id_end) {
-        let chrom = &line[start..end];
-        
-        // Get target size for this chromosome
-        if let Some(size) = mapper.index().target_chrom_size(chrom) {
-            return format!("##contig=<ID={},length={}>", chrom, size);
-        }
-    }
-    
-    line.to_string()
+    &buf[..end]
 }
 
-/// Chunk size for parallel processing (reserved for future use)
-#[allow(dead_code)]
-const CHUNK_SIZE: usize = 10000;
+/// Where one converted record belongs.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum GvcfOutcome {
+    /// Mapped: write to the output file and count a success.
+    #[default]
+    Mapped,
+    /// Not mapped: write to the unmap file and count a failure.
+    Unmapped,
+    /// A header emitted mid-stream: write to the output file and count a header.
+    Header,
+}
+
+/// One converted GVCF record.
+#[derive(Default)]
+struct GvcfOut {
+    outcome: GvcfOutcome,
+    text: String,
+}
+
+/// Upper bound on the bytes of raw input held in one batch (see the VCF path).
+const MAX_BATCH_BYTES: usize = 4 << 20;
 
 /// Convert a GVCF file
 ///
@@ -521,7 +456,7 @@ const CHUNK_SIZE: usize = 10000;
 /// * `mapper` - Coordinate mapper
 /// * `ref_genome` - Optional path to target reference genome (FASTA)
 /// * `no_comp_allele` - If true, don't filter REF==ALT
-/// * `_threads` - Number of threads (reserved for future parallel processing)
+/// * `threads` - Number of threads (1 = sequential)
 ///
 /// # Returns
 /// Conversion statistics
@@ -531,139 +466,190 @@ pub fn convert_gvcf<P: AsRef<Path>>(
     mapper: &CoordinateMapper,
     ref_genome: Option<P>,
     no_comp_allele: bool,
-    _threads: usize,
+    threads: usize,
 ) -> Result<ConversionStats, std::io::Error> {
+    use crate::core::pipeline::{batch_size, run_ordered_pipeline, Batch, Conversion, LineBatch};
+
     let input_file = std::fs::File::open(input.as_ref())?;
-    let reader = BufReader::with_capacity(128 * 1024, input_file);
-    
+    let mut reader: Box<dyn BufRead + Send> =
+        if input.as_ref().extension().and_then(|e| e.to_str()) == Some("gz") {
+            Box::new(BufReader::with_capacity(
+                128 * 1024,
+                flate2::read::MultiGzDecoder::new(input_file),
+            ))
+        } else {
+            Box::new(BufReader::with_capacity(128 * 1024, input_file))
+        };
+
     // Prepare output files with BufWriter for performance
     let output_path = output.as_ref();
     let unmap_path = output_path.with_extension("gvcf.unmap");
-    
+
     let mut output_file = BufWriter::with_capacity(128 * 1024, std::fs::File::create(output_path)?);
     let mut unmap_file = BufWriter::with_capacity(64 * 1024, std::fs::File::create(&unmap_path)?);
-    
+
     // Open reference genome if provided
-    let mut ref_reader = ref_genome
-        .map(|p| fasta_stub::FastaReader::open(p.as_ref()))
+    let assembly = ref_genome
+        .as_ref()
+        .and_then(|p| p.as_ref().file_name())
+        .map(|n| n.to_string_lossy().into_owned());
+    let ref_reader = ref_genome
+        .map(|p| crate::core::fasta::FastaReader::open(p.as_ref()))
         .transpose()?;
-    
-    // Atomic counters
-    let total = AtomicUsize::new(0);
-    let success = AtomicUsize::new(0);
-    let failed = AtomicUsize::new(0);
-    let headers = AtomicUsize::new(0);
-    
-    // Collect lines
-    let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
-    
-    // Detect chr_template from contig headers (CrossMap behavior)
-    let mut chr_template = "chr1".to_string();
-    for line in &lines {
-        if line.starts_with("##contig=") {
-            if line.contains("ID=chr") {
-                chr_template = "chr1".to_string();
-            } else {
-                chr_template = "1".to_string();
-            }
+
+    let mut stats = ConversionStats::default();
+    let mut line_buf: Vec<u8> = Vec::with_capacity(4096);
+    let mut pending: Option<Vec<u8>> = None;
+    // Chromosome style of the input's `##contig` lines (CrossMap behavior);
+    // defaults to `chr`-prefixed when the input declares none.
+    let mut chr_template = "chr1";
+
+    // Phase 1: stream the headers, stopping at the first data line.
+    loop {
+        line_buf.clear();
+        if reader.read_until(b'\n', &mut line_buf)? == 0 {
             break;
         }
-    }
-    
-    // Process sequentially (GVCF often needs reference genome access which isn't thread-safe)
-    for line in &lines {
+        let line = trim_ascii_end(&line_buf);
         if line.is_empty() {
             continue;
         }
-        
-        // Handle header lines
-        if line.starts_with('#') {
-            // CrossMap behavior for GVCF headers
-            if line.starts_with("##fileformat")
-                || line.starts_with("##INFO")
-                || line.starts_with("##FILTER")
-                || line.starts_with("##FORMAT")
-                || line.starts_with("##ALT")
-                || line.starts_with("##SAMPLE")
-                || line.starts_with("##PEDIGREE")
-                || line.starts_with("##GVCFBlock")
-                || line.starts_with("##GATKCommandLine")
-                || line.starts_with("##source")
-            {
-                // Write to both files
-                writeln!(output_file, "{}", line)?;
-                writeln!(unmap_file, "{}", line)?;
-            } else if line.starts_with("##assembly") || line.starts_with("##contig") {
-                // Write only to unmap file (CrossMap behavior)
-                writeln!(unmap_file, "{}", line)?;
-            } else if line.starts_with("#CHROM") {
-                // Update contig information for target assembly
-                // CrossMap: only output contigs starting with 'chr'
-                for (chrom, size) in mapper.index().target_chrom_sizes() {
-                    if chr_template.starts_with("chr") {
-                        // Only output chr-prefixed contigs
-                        if chrom.starts_with("chr") {
-                            writeln!(output_file, "##contig=<ID={},length={}>", chrom, size)?;
+        if line[0] != b'#' {
+            pending = Some(line.to_vec());
+            break;
+        }
+
+        let text = std::str::from_utf8(line)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid UTF-8"))?;
+        // CrossMap behavior for GVCF headers
+        if text.starts_with("##fileformat")
+            || text.starts_with("##INFO")
+            || text.starts_with("##FILTER")
+            || text.starts_with("##FORMAT")
+            || text.starts_with("##ALT")
+            || text.starts_with("##SAMPLE")
+            || text.starts_with("##PEDIGREE")
+            || text.starts_with("##GVCFBlock")
+            || text.starts_with("##GATKCommandLine")
+            || text.starts_with("##source")
+        {
+            // Write to both files
+            writeln!(output_file, "{}", text)?;
+            writeln!(unmap_file, "{}", text)?;
+        } else if text.starts_with("##assembly") || text.starts_with("##contig") {
+            if text.starts_with("##contig") {
+                chr_template = chr_template_from_contig_line(text);
+            }
+            // Write only to unmap file (CrossMap behavior)
+            writeln!(unmap_file, "{}", text)?;
+        } else if text.starts_with("#CHROM") {
+            // Update contig information for the target assembly. CrossMap takes
+            // these from the reference FASTA (not the chain), keeps only the
+            // `chr`-prefixed references, and sorts them by name.
+            if let Some(ref rdr) = ref_reader {
+                let mut contigs: Vec<(String, usize)> = rdr
+                    .references()
+                    .iter()
+                    .cloned()
+                    .zip(rdr.lengths())
+                    .filter(|(chrom, _)| chrom.starts_with("chr"))
+                    .collect();
+                contigs.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+                for (chrom, size) in contigs {
+                    let id = update_chrom_id_by_template(&chrom, chr_template);
+                    match assembly {
+                        Some(ref a) => writeln!(
+                            output_file,
+                            "##contig=<ID={},length={},assembly={}>",
+                            id, size, a
+                        )?,
+                        None => {
+                            writeln!(output_file, "##contig=<ID={},length={}>", id, size)?
                         }
-                    } else {
-                        // Output without chr prefix
-                        let chrom_out = if chrom.starts_with("chr") {
-                            &chrom[3..]
-                        } else {
-                            chrom.as_str()
-                        };
-                        writeln!(output_file, "##contig=<ID={},length={}>", chrom_out, size)?;
-                    }
-                }
-                
-                // Write liftover metadata (CrossMap format)
-                writeln!(output_file, "##liftOverProgram=FastCrossMap")?;
-                
-                // Write column header to both files
-                writeln!(output_file, "{}", line)?;
-                writeln!(unmap_file, "{}", line)?;
-            } else {
-                // Other header lines - write to output only
-                writeln!(output_file, "{}", line)?;
-            }
-            headers.fetch_add(1, Ordering::Relaxed);
-            continue;
-        }
-        
-        total.fetch_add(1, Ordering::Relaxed);
-        
-        // Parse and convert
-        match GvcfRecordView::parse(line.as_bytes()) {
-            Ok(view) => {
-                let result = convert_gvcf_record(&view, mapper, ref_reader.as_ref(), no_comp_allele);
-                match result {
-                    ConversionResult::Success(converted) => {
-                        writeln!(output_file, "{}", converted)?;
-                        success.fetch_add(1, Ordering::Relaxed);
-                    }
-                    ConversionResult::Failed(original, _reason) => {
-                        writeln!(unmap_file, "{}", original)?;
-                        failed.fetch_add(1, Ordering::Relaxed);
-                    }
-                    ConversionResult::Header(h) => {
-                        writeln!(output_file, "{}", h)?;
-                        headers.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
-            Err(_) => {
-                writeln!(unmap_file, "{}", line)?;
-                failed.fetch_add(1, Ordering::Relaxed);
-            }
+
+            // Write liftover metadata (CrossMap format)
+            writeln!(output_file, "##liftOverProgram=FastCrossMap")?;
+
+            // Write column header to both files
+            writeln!(output_file, "{}", text)?;
+            writeln!(unmap_file, "{}", text)?;
+        } else {
+            // Other header lines - write to output only
+            writeln!(output_file, "{}", text)?;
         }
+        stats.headers += 1;
     }
-    
-    Ok(ConversionStats {
-        total: total.load(Ordering::Relaxed),
-        success: success.load(Ordering::Relaxed),
-        failed: failed.load(Ordering::Relaxed),
-        headers: headers.load(Ordering::Relaxed),
-    })
+
+    // Phase 2: stream the data lines through the pipeline.
+    run_ordered_pipeline::<LineBatch, GvcfOut, _, _, _>(
+        threads,
+        |line: &[u8], out: &mut GvcfOut| match GvcfRecordView::parse(line) {
+            Ok(view) => match convert_gvcf_record(&view, mapper, ref_reader.as_ref(), no_comp_allele) {
+                ConversionResult::Success(converted) => {
+                    out.outcome = GvcfOutcome::Mapped;
+                    out.text = converted;
+                    true
+                }
+                ConversionResult::Failed(original, _reason) => {
+                    out.outcome = GvcfOutcome::Unmapped;
+                    out.text = original;
+                    false
+                }
+                ConversionResult::Header(h) => {
+                    out.outcome = GvcfOutcome::Header;
+                    out.text = h;
+                    true
+                }
+            },
+            Err(_) => {
+                out.outcome = GvcfOutcome::Unmapped;
+                out.text = String::from_utf8_lossy(line).into_owned();
+                false
+            }
+        },
+        |batch: &mut LineBatch| {
+            if let Some(line) = pending.take() {
+                batch.push_line(&line);
+            }
+            while batch.len() < batch_size() && batch.buffer.len() < MAX_BATCH_BYTES {
+                line_buf.clear();
+                if reader.read_until(b'\n', &mut line_buf)? == 0 {
+                    break;
+                }
+                let line = trim_ascii_end(&line_buf);
+                if line.is_empty() {
+                    continue;
+                }
+                batch.push_line(line);
+            }
+            Ok(batch.len())
+        },
+        |_batch: &LineBatch, results: &[Conversion<GvcfOut>]| {
+            for result in results {
+                match result.output.outcome {
+                    GvcfOutcome::Mapped => {
+                        writeln!(output_file, "{}", result.output.text)?;
+                        stats.success += 1;
+                    }
+                    GvcfOutcome::Unmapped => {
+                        writeln!(unmap_file, "{}", result.output.text)?;
+                        stats.failed += 1;
+                    }
+                    GvcfOutcome::Header => {
+                        writeln!(output_file, "{}", result.output.text)?;
+                        stats.headers += 1;
+                    }
+                }
+            }
+            stats.total += results.len();
+            Ok(())
+        },
+    )?;
+
+    Ok(stats)
 }
 
 

@@ -4,7 +4,7 @@
 
 set -e
 
-CHAIN_FILE="${1:-ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz}"
+CHAIN_FILE="${1:-tests/data/GRCh37_to_GRCh38.chain.gz}"
 TEST_FILE="${2:-test_data/compat_test.bed}"
 FORMAT="${3:-bed}"
 

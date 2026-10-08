@@ -9,7 +9,9 @@ Usage: python paper/02b_benchmark_bed_multithread.py
 Output: paper/results/benchmark_bed_multithread.json
 """
 
+import os
 import subprocess
+import shutil
 import time
 import json
 from pathlib import Path
@@ -21,6 +23,59 @@ from datetime import datetime
 DATA_DIR = Path("paper/data")
 RESULTS_DIR = Path("paper/results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def cleanup_outputs(*targets) -> None:
+    """Delete a dataset's tool outputs once its numbers are already recorded.
+
+    Every dataset writes each tool's mapped output at full input size -- the VCF
+    ones are ~11 GB apiece -- so keeping them costs tens of GB that the results
+    JSON already summarises. Removing the directory as soon as that dataset's
+    results are in keeps peak disk use to one dataset instead of all of them,
+    which is what lets a full re-run fit on a smaller volume. Set
+    FCM_KEEP_OUTPUTS=1 in the environment to keep the files for inspection.
+
+    Only paths inside RESULTS_DIR are ever removed, so a mistyped argument
+    cannot delete an input or anything else outside the results tree.
+    """
+    if os.environ.get("FCM_KEEP_OUTPUTS"):
+        print("    FCM_KEEP_OUTPUTS set: keeping outputs")
+        return
+    root = RESULTS_DIR.resolve()
+    for target in targets:
+        if target is None:
+            continue
+        target = Path(target)
+        if not target.exists():
+            continue
+        try:
+            target.resolve().relative_to(root)
+        except ValueError:
+            print(f"    refusing to clean {target}: outside {RESULTS_DIR}")
+            continue
+        freed = 0
+        if target.is_dir():
+            for p in target.rglob("*"):
+                if p.is_file():
+                    try:
+                        freed += p.stat().st_size
+                    except OSError:
+                        pass
+            shutil.rmtree(target, ignore_errors=True)
+        else:
+            try:
+                freed = target.stat().st_size
+            except OSError:
+                freed = 0
+            try:
+                target.unlink()
+            except OSError:
+                pass
+        print(f"    cleaned {target}  ({freed / 1e9:.2f} GB freed)".rstrip())
+
+
+# FastCrossMap binary (override with FCM_BIN=/path/to/fast-crossmap)
+FCM_BIN = os.environ.get("FCM_BIN", "./target/release/fast-crossmap")
 
 # Test files
 CHAIN_FILE = DATA_DIR / "hg19ToHg38.over.chain.gz"
@@ -57,7 +112,7 @@ def count_bed_records(bed_file):
 def run_fastcrossmap(chain_file, input_file, output_file, threads=1):
     """Run FastCrossMap and return execution time"""
     cmd = [
-        "./fast-crossmap-linux-x64/fast-crossmap", "bed",
+        FCM_BIN, "bed",
         "-t", str(threads),
         str(chain_file),
         str(input_file),
@@ -182,6 +237,7 @@ def main():
         json.dump(output_data, f, indent=2)
     
     print(f"\nResults saved to: {output_file}")
+    cleanup_outputs(*RESULTS_DIR.glob('fastcrossmap_mt*_output.*'))
     print("\nNext step: python paper/04_plot_performance.py")
 
 

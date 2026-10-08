@@ -29,6 +29,9 @@ NC='\033[0m' # No Color
 SKIP_DOWNLOAD=false
 SKIP_BENCHMARK=false
 
+# FastCrossMap binary (override with FCM=/path/to/fast-crossmap)
+FCM="${FCM:-./target/release/fast-crossmap}"
+
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -88,10 +91,8 @@ check_dependencies() {
     python3 -c "import psutil" 2>/dev/null || missing+=("psutil")
     
     # Check tools
-    if ! command -v ./fast-crossmap-linux-x64/fast-crossmap &> /dev/null; then
-        if [ ! -f "./fast-crossmap-linux-x64/fast-crossmap" ]; then
-            missing+=("fast-crossmap (please run cargo build --release first)")
-        fi
+    if [ ! -x "$FCM" ]; then
+        missing+=("fast-crossmap (not found at $FCM; run cargo build --release, or set FCM=/path/to/fast-crossmap)")
     fi
     
     if ! command -v CrossMap.py &> /dev/null; then

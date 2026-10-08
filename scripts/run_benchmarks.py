@@ -539,7 +539,7 @@ def main():
         description="Comprehensive 4-way benchmark for genome coordinate conversion tools"
     )
     parser.add_argument("--chain", type=Path, 
-                        default=Path("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz"),
+                        default=Path("tests/data/GRCh37_to_GRCh38.chain.gz"),
                         help="Path to chain file")
     parser.add_argument("--input", type=Path, help="Path to input file")
     parser.add_argument("--format", choices=["bed", "bam", "vcf", "gff"], default="bed",

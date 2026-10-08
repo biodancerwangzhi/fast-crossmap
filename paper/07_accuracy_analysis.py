@@ -12,6 +12,7 @@ Output: paper/results/accuracy.json
 """
 
 import json
+import os
 import subprocess
 from collections import defaultdict
 from dataclasses import dataclass, asdict
@@ -25,6 +26,9 @@ from typing import Dict, List, Optional
 DATA_DIR = Path("paper/data")
 RESULTS_DIR = Path("paper/results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# FastCrossMap binary (override with FCM_BIN=/path/to/fast-crossmap)
+FCM_BIN = os.environ.get("FCM_BIN", "./target/release/fast-crossmap")
 
 # Input files
 CHAIN_FILE = DATA_DIR / "hg19ToHg38.over.chain.gz"
@@ -131,7 +135,7 @@ def run_tool_and_load_output(tool: str, indexed_bed: Path, chain_file: Path,
     # Based on tool, choose command
     if tool == "FastCrossMap":
         cmd = [
-            "./fast-crossmap-linux-x64/fast-crossmap",
+            FCM_BIN,
             "bed",
             str(chain_file),
             str(indexed_bed),

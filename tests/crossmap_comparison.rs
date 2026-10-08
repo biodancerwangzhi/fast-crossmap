@@ -12,7 +12,7 @@ use std::process::Command;
 /// This test requires Python CrossMap to be installed.
 #[test]
 fn test_single_coordinate_vs_crossmap() {
-    let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
     
     if !chain_path.exists() {
         eprintln!("Skipping test: chain file not found");
@@ -164,7 +164,7 @@ fn run_crossmap_bed(chain_path: &PathBuf, chrom: &str, start: u64, end: u64) -> 
 /// Batch comparison test
 #[test]
 fn test_batch_coordinates_vs_crossmap() {
-    let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
     
     if !chain_path.exists() {
         eprintln!("Skipping test: chain file not found");

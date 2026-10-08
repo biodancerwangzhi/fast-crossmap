@@ -76,7 +76,7 @@ enum Commands {
         input: PathBuf,
         /// Output file (optional, stdout if not specified)
         output: Option<PathBuf>,
-        /// Number of threads (default: number of CPUs)
+        /// Number of worker threads (default: 1)
         #[arg(short = 't', long, default_value = "1")]
         threads: usize,
         /// Chromosome ID style: a(as-is), s(short), l(long)
@@ -93,7 +93,7 @@ enum Commands {
         refgenome: PathBuf,
         /// Output file (optional, stdout if not specified)
         output: Option<PathBuf>,
-        /// Number of threads (default: number of CPUs)
+        /// Number of worker threads (default: 1)
         #[arg(short = 't', long, default_value = "1")]
         threads: usize,
         /// Don't filter variants where REF==ALT after liftover
@@ -111,7 +111,7 @@ enum Commands {
         input: PathBuf,
         /// Output file (optional, stdout if not specified)
         output: Option<PathBuf>,
-        /// Number of threads (default: number of CPUs)
+        /// Number of worker threads (default: 1)
         #[arg(short = 't', long, default_value = "1")]
         threads: usize,
         /// Chromosome ID style: a(as-is), s(short), l(long)
@@ -131,7 +131,7 @@ enum Commands {
         /// Don't filter variants where REF==ALT after liftover
         #[arg(long = "no-comp-allele")]
         no_comp_allele: bool,
-        /// Number of threads (default: number of CPUs)
+        /// Number of worker threads (default: 1)
         #[arg(short = 't', long, default_value = "1")]
         threads: usize,
         /// Chromosome ID style: a(as-is), s(short), l(long)
@@ -176,7 +176,7 @@ enum Commands {
         input: PathBuf,
         /// Output BAM file
         output: PathBuf,
-        /// Number of threads for parallel I/O
+        /// Number of worker threads (default: 1)
         #[arg(short = 't', long, default_value = "1")]
         threads: usize,
         /// Chromosome ID style: a(as-is), s(short), l(long)

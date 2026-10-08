@@ -343,7 +343,7 @@ mod integration_tests {
     
     #[test]
     fn test_load_real_chain_file() {
-        let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+        let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
         
         if !chain_path.exists() {
             eprintln!("Skipping test: chain file not found");

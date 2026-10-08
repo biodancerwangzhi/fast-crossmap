@@ -1,6 +1,6 @@
 [package]
 name = "fast-crossmap"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 authors = ["FastCrossMap Contributors"]
 description = "High-performance genome coordinate liftover tool"
@@ -8,13 +8,19 @@ license = "MIT"
 repository = "https://github.com/biodancerwangzhi/fast-crossmap"
 keywords = ["bioinformatics", "genomics", "liftover", "crossmap"]
 categories = ["science", "command-line-utilities"]
+# 论文复现脚本与基准数据不进 crates.io 包：它们是 Git 仓库的一部分
+# (https://github.com/biodancerwangzhi/fast-crossmap)，而不是这个 crate 的
+# 发布内容。留在包里会让每个 cargo install 都下到几 MB 的 benchmark 脚本。
+exclude = ["paper/"]
 
 [features]
-default = ["bam"]
-# BAM/SAM/CRAM 支持 (需要 htslib，Windows 上难以编译)
-bam = ["rust-htslib"]
+default = ["bam", "cli"]
+# CLI 工具依赖（clap + env_logger）
+cli = ["dep:clap", "dep:env_logger"]
+# BAM/SAM/CRAM 支持 (纯 Rust，通过 noodles 实现)
+bam = ["dep:noodles-bam", "dep:noodles-sam", "dep:noodles-bgzf", "dep:noodles-core"]
 # 完整功能 (所有格式)
-full = ["bam"]
+full = ["bam", "cli"]
 
 [dependencies]
 # 并行处理
@@ -24,7 +30,7 @@ rayon = "1.10"
 rust-lapper = "1.1"
 
 # 命令行解析
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"], optional = true }
 
 # 压缩文件支持
 flate2 = "1.0"
@@ -36,7 +42,7 @@ anyhow = "1.0"
 
 # 日志
 log = "0.4"
-env_logger = "0.11"
+env_logger = { version = "0.11", optional = true }
 
 # 内存映射
 memmap2 = "0.9"
@@ -53,8 +59,11 @@ bigtools = "0.5"
 # Tokio runtime (for bigtools BigWig writing)
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
-# BAM/SAM/CRAM 支持 (可选，Windows 上禁用)
-rust-htslib = { version = "0.47", optional = true }
+# BAM/SAM 支持 (纯 Rust，通过 noodles 实现，可选)
+noodles-bam = { version = "0.95", optional = true }
+noodles-sam = { version = "0.90", optional = true }
+noodles-bgzf = { version = "0.51", optional = true }
+noodles-core = { version = "0.20", optional = true }
 
 [dev-dependencies]
 # 属性测试
@@ -69,6 +78,7 @@ tempfile = "3.10"
 [[bin]]
 name = "fast-crossmap"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [lib]
 name = "fast_crossmap"

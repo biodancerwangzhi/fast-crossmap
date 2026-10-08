@@ -286,61 +286,78 @@ impl<R: BufRead> Iterator for WigReader<R> {
     }
 }
 
-/// Merge overlapping bedGraph records with same value
+/// Merge overlapping bedGraph records by splitting at boundaries and summing values.
+/// After liftover, originally non-overlapping intervals can map to overlapping regions.
+/// BigWig format forbids overlapping intervals, so we resolve them here.
 fn merge_bedgraph_records(records: Vec<BedGraphRecord>) -> Vec<BedGraphRecord> {
     if records.is_empty() {
         return records;
     }
-    
-    // Group by chromosome
+
     let mut by_chrom: BTreeMap<String, Vec<BedGraphRecord>> = BTreeMap::new();
     for rec in records {
         by_chrom.entry(rec.chrom.clone()).or_default().push(rec);
     }
-    
-    let mut merged = Vec::new();
-    
-    for (chrom, mut recs) in by_chrom {
-        // Sort by start position
-        recs.sort_by_key(|r| r.start);
-        
-        let mut current: Option<BedGraphRecord> = None;
-        
-        for rec in recs {
-            match current.take() {
-                None => {
-                    current = Some(rec);
-                }
-                Some(mut curr) => {
-                    // Check if can merge (adjacent or overlapping with same value)
-                    if rec.chrom == curr.chrom 
-                        && rec.start <= curr.end 
-                        && (rec.value - curr.value).abs() < 1e-10 
-                    {
-                        // Merge: extend end
-                        curr.end = curr.end.max(rec.end);
-                        current = Some(curr);
-                    } else {
-                        // Cannot merge, output current and start new
-                        merged.push(BedGraphRecord {
-                            chrom: chrom.clone(),
-                            ..curr
-                        });
-                        current = Some(rec);
-                    }
-                }
+
+    let mut result = Vec::new();
+
+    for (chrom, recs) in by_chrom {
+        // Build sweep events: +value at start, -value at end
+        let mut events: Vec<(u64, f64)> = Vec::with_capacity(recs.len() * 2);
+        for rec in &recs {
+            events.push((rec.start, rec.value));
+            events.push((rec.end, -rec.value));
+        }
+        events.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)));
+
+        // Sweep through events to build non-overlapping segments.
+        //
+        // Accumulating deltas in f64 does not cancel exactly: opening and closing
+        // the same value can leave a residual around 1e-14. Left alone, that
+        // residue leaks out as a phantom segment in the gap between two real
+        // records, or as a tiny offset on the next real value. Snapping anything
+        // below `EPS` back to zero keeps the sweep from drifting.
+        const EPS: f64 = 1e-9;
+
+        let mut merged_segments: Vec<(u64, u64, f64)> = Vec::new();
+        let mut current_val = 0.0f64;
+        let mut prev_pos = events[0].0;
+
+        for (pos, delta) in &events {
+            if *pos > prev_pos && current_val.abs() > EPS {
+                merged_segments.push((prev_pos, *pos, current_val));
+            }
+            if *pos > prev_pos {
+                prev_pos = *pos;
+            }
+            current_val += delta;
+            if current_val.abs() < EPS {
+                current_val = 0.0;
             }
         }
-        
-        if let Some(curr) = current {
-            merged.push(BedGraphRecord {
-                chrom,
-                ..curr
+
+        // Coalesce adjacent segments with the same value
+        for (seg_start, seg_end, val) in merged_segments {
+            if let Some(last) = result.last_mut() {
+                let last_rec: &mut BedGraphRecord = last;
+                if last_rec.chrom == chrom
+                    && last_rec.end == seg_start
+                    && (last_rec.value - val).abs() < 1e-10
+                {
+                    last_rec.end = seg_end;
+                    continue;
+                }
+            }
+            result.push(BedGraphRecord {
+                chrom: chrom.clone(),
+                start: seg_start,
+                end: seg_end,
+                value: val,
             });
         }
     }
-    
-    merged
+
+    result
 }
 
 /// Convert a single Wiggle data point
@@ -422,8 +439,8 @@ pub fn convert_wig<P: AsRef<Path>>(
     // Merge overlapping records
     let original_count = converted_records.len();
     let merged_records = merge_bedgraph_records(converted_records);
-    stats.merged = original_count - merged_records.len();
-    
+    stats.merged = original_count.abs_diff(merged_records.len());
+
     // Write output in Wiggle variableStep format
     write_wiggle_file(&output_path, &merged_records)?;
     
@@ -435,16 +452,30 @@ pub fn convert_wig<P: AsRef<Path>>(
     Ok(stats)
 }
 
+/// Render a score the way Python's `repr` does.
+///
+/// CrossMap is a Python program, so its scores reach disk through `str(float)`:
+/// shortest round-trip form, but always recognisable as a float (`44.0`, not
+/// `44`). Rust's `Display` produces the same digits, minus the trailing `.0` on
+/// whole numbers, so we add it back.
+fn format_value(value: f64) -> String {
+    let mut s = value.to_string();
+    if !s.contains('.') && !s.contains('e') && !s.contains('E') && !s.contains("inf") && !s.contains("NaN") {
+        s.push_str(".0");
+    }
+    s
+}
+
 /// Write records to a Wiggle file in variableStep format
 fn write_wiggle_file(path: &str, records: &[BedGraphRecord]) -> Result<(), std::io::Error> {
     let mut output_file = BufWriter::with_capacity(128 * 1024, std::fs::File::create(path)?);
-    
+
     // Group records by chromosome
     let mut by_chrom: BTreeMap<String, Vec<&BedGraphRecord>> = BTreeMap::new();
     for rec in records {
         by_chrom.entry(rec.chrom.clone()).or_default().push(rec);
     }
-    
+
     // Write each chromosome's data
     for (chrom, recs) in by_chrom {
         // Determine span (use the most common span, default to 1)
@@ -453,20 +484,20 @@ fn write_wiggle_file(path: &str, records: &[BedGraphRecord]) -> Result<(), std::
         } else {
             1
         };
-        
+
         // Write variableStep declaration
         if span > 1 {
             writeln!(output_file, "variableStep chrom={} span={}", chrom, span)?;
         } else {
             writeln!(output_file, "variableStep chrom={}", chrom)?;
         }
-        
+
         // Write data points (convert 0-based to 1-based)
         for rec in recs {
-            writeln!(output_file, "{}\t{}", rec.start + 1, rec.value)?;
+            writeln!(output_file, "{}\t{}", rec.start + 1, format_value(rec.value))?;
         }
     }
-    
+
     Ok(())
 }
 
@@ -509,6 +540,7 @@ pub mod bigwig {
         Ok(points)
     }
     
+
     /// Write bedGraph records directly to a BigWig file using bigtools
     pub fn write_bigwig_direct<P: AsRef<Path>>(
         records: &[BedGraphRecord],
@@ -529,15 +561,32 @@ pub mod bigwig {
         sorted_records.sort_by(|a, b| {
             a.chrom.cmp(&b.chrom).then(a.start.cmp(&b.start))
         });
-        
+
+        let mut by_chrom: BTreeMap<&str, Vec<&BedGraphRecord>> = BTreeMap::new();
+        for rec in &sorted_records {
+            by_chrom.entry(rec.chrom.as_str()).or_default().push(rec);
+        }
+        let mut targets: Vec<&str> = chrom_sizes.keys().map(|k| k.as_str()).collect();
+        targets.sort_unstable();
+
         // Write to a temporary bedGraph file first
         let temp_bgr_path = format!("{}.temp.bedGraph", output_path.as_ref().display());
         {
             let mut file = BufWriter::with_capacity(128 * 1024, std::fs::File::create(&temp_bgr_path)
                 .map_err(|e| WigParseError::IoError(e.to_string()))?);
-            for rec in &sorted_records {
-                writeln!(file, "{}\t{}\t{}\t{}", rec.chrom, rec.start, rec.end, rec.value)
-                    .map_err(|e| WigParseError::IoError(e.to_string()))?;
+            for chrom in targets {
+                match by_chrom.get(chrom) {
+                    Some(recs) => {
+                        for rec in recs {
+                            writeln!(file, "{}\t{}\t{}\t{}", rec.chrom, rec.start, rec.end, rec.value)
+                                .map_err(|e| WigParseError::IoError(e.to_string()))?;
+                        }
+                    }
+                    None => {
+                        writeln!(file, "{}\t0\t0\t0", chrom)
+                            .map_err(|e| WigParseError::IoError(e.to_string()))?;
+                    }
+                }
             }
         }
         
@@ -558,7 +607,7 @@ pub mod bigwig {
         
         writer.write(vals, runtime)
             .map_err(|e| WigParseError::IoError(format!("{:?}", e)))?;
-        
+
         // Clean up temp file
         let _ = std::fs::remove_file(&temp_bgr_path);
         
@@ -608,7 +657,7 @@ pub mod bigwig {
         // Merge overlapping records
         let original_count = converted_records.len();
         let merged_records = merge_bedgraph_records(converted_records);
-        stats.merged = original_count - merged_records.len();
+        stats.merged = original_count.abs_diff(merged_records.len());
         
         // Write BigWig output directly
         let bw_path = format!("{}.bw", output_prefix.as_ref().display());
@@ -636,6 +685,65 @@ pub mod bigwig {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    /// Parse a BigWig's B+ chrom tree into `(name, id, length)` triples.
+    fn read_chrom_tree(path: &std::path::Path) -> Vec<(String, u32, u32)> {
+        let d = std::fs::read(path).unwrap();
+        let rd_u32 = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let rd_u64 = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
+        let ct = rd_u64(8) as usize;
+        let key_size = rd_u32(ct + 8) as usize;
+        let count = u16::from_le_bytes(d[ct + 34..ct + 36].try_into().unwrap()) as usize;
+        let mut out = Vec::new();
+        let mut o = ct + 36;
+        for _ in 0..count {
+            let name = String::from_utf8_lossy(&d[o..o + key_size])
+                .trim_end_matches('\0')
+                .to_string();
+            let id = rd_u32(o + key_size);
+            let len = rd_u32(o + key_size + 4);
+            out.push((name, id, len));
+            o += key_size + 8;
+        }
+        out
+    }
+
+    /// The dictionary must list every target sequence, not just the ones with data,
+    /// with ids assigned in name-sorted order — the way CrossMap writes it.
+    #[test]
+    fn test_bigwig_chrom_tree_lists_all_targets() {
+        let mut chrom_sizes = std::collections::HashMap::new();
+        chrom_sizes.insert("chr1".to_string(), 1_000_000u64);
+        chrom_sizes.insert("chr10".to_string(), 2_000_000u64);
+        chrom_sizes.insert("chr2".to_string(), 3_000_000u64);
+
+        // Only chr2 and chr10 carry data; chr1 must still appear in the dictionary.
+        let records = vec![
+            BedGraphRecord { chrom: "chr10".to_string(), start: 100, end: 200, value: 1.0 },
+            BedGraphRecord { chrom: "chr2".to_string(), start: 300, end: 400, value: 2.0 },
+        ];
+
+        let path = std::env::temp_dir().join(format!(
+            "fcm_bigwig_dict_test_{}.bw",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        bigwig::write_bigwig_direct(&records, &path, &chrom_sizes).unwrap();
+        let tree = read_chrom_tree(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            tree,
+            vec![
+                ("chr1".to_string(), 0, 1_000_000),
+                ("chr10".to_string(), 1, 2_000_000),
+                ("chr2".to_string(), 2, 3_000_000),
+            ]
+        );
+    }
 
     #[test]
     fn test_variable_step_declaration() {
@@ -804,9 +912,9 @@ variableStep chrom=chr2 span=20
             BedGraphRecord { chrom: "chr1".to_string(), start: 100, end: 200, value: 1.0 },
             BedGraphRecord { chrom: "chr1".to_string(), start: 200, end: 300, value: 1.0 },
         ];
-        
+
         let merged = merge_bedgraph_records(records);
-        
+
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].start, 0);
         assert_eq!(merged[0].end, 300);
@@ -819,9 +927,9 @@ variableStep chrom=chr2 span=20
             BedGraphRecord { chrom: "chr1".to_string(), start: 0, end: 100, value: 1.0 },
             BedGraphRecord { chrom: "chr1".to_string(), start: 100, end: 200, value: 2.0 },
         ];
-        
+
         let merged = merge_bedgraph_records(records);
-        
+
         assert_eq!(merged.len(), 2);
     }
 
@@ -831,9 +939,9 @@ variableStep chrom=chr2 span=20
             BedGraphRecord { chrom: "chr1".to_string(), start: 0, end: 100, value: 1.0 },
             BedGraphRecord { chrom: "chr2".to_string(), start: 0, end: 100, value: 1.0 },
         ];
-        
+
         let merged = merge_bedgraph_records(records);
-        
+
         assert_eq!(merged.len(), 2);
     }
 
@@ -843,11 +951,72 @@ variableStep chrom=chr2 span=20
             BedGraphRecord { chrom: "chr1".to_string(), start: 0, end: 150, value: 1.0 },
             BedGraphRecord { chrom: "chr1".to_string(), start: 100, end: 200, value: 1.0 },
         ];
-        
+
         let merged = merge_bedgraph_records(records);
-        
-        assert_eq!(merged.len(), 1);
+
+        // 0-100: val 1.0, 100-150: val 2.0 (summed), 150-200: val 1.0
+        assert_eq!(merged.len(), 3);
         assert_eq!(merged[0].start, 0);
-        assert_eq!(merged[0].end, 200);
+        assert_eq!(merged[0].end, 100);
+        assert!((merged[0].value - 1.0).abs() < 1e-10);
+        assert_eq!(merged[1].start, 100);
+        assert_eq!(merged[1].end, 150);
+        assert!((merged[1].value - 2.0).abs() < 1e-10);
+        assert_eq!(merged[2].start, 150);
+        assert_eq!(merged[2].end, 200);
+        assert!((merged[2].value - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_merge_bedgraph_overlapping_different_values() {
+        let records = vec![
+            BedGraphRecord { chrom: "chr1".to_string(), start: 10, end: 50, value: 3.0 },
+            BedGraphRecord { chrom: "chr1".to_string(), start: 30, end: 80, value: 5.0 },
+        ];
+
+        let merged = merge_bedgraph_records(records);
+
+        // 10-30: 3.0, 30-50: 8.0, 50-80: 5.0
+        assert_eq!(merged.len(), 3);
+        assert_eq!((merged[0].start, merged[0].end), (10, 30));
+        assert!((merged[0].value - 3.0).abs() < 1e-10);
+        assert_eq!((merged[1].start, merged[1].end), (30, 50));
+        assert!((merged[1].value - 8.0).abs() < 1e-10);
+        assert_eq!((merged[2].start, merged[2].end), (50, 80));
+        assert!((merged[2].value - 5.0).abs() < 1e-10);
+    }
+
+    /// Overlapping values that do not cancel exactly in f64 must not leave a
+    /// phantom record in the gap before the next real one.
+    #[test]
+    fn test_merge_bedgraph_no_phantom_after_inexact_cancellation() {
+        // 193.49 - 100.0 - 93.49 leaves a 1.4e-14 residue in f64.
+        let records = vec![
+            BedGraphRecord { chrom: "chr1".to_string(), start: 0, end: 10, value: 100.0 },
+            BedGraphRecord { chrom: "chr1".to_string(), start: 5, end: 10, value: 93.49 },
+            BedGraphRecord { chrom: "chr1".to_string(), start: 30, end: 40, value: 5.0 },
+        ];
+
+        let merged = merge_bedgraph_records(records);
+
+        // 0-5: 100.0, 5-10: 193.49, then nothing until the real 30-40 record.
+        assert_eq!(merged.len(), 3, "phantom record in the 10..30 gap: {:?}", merged);
+        assert_eq!((merged[0].start, merged[0].end), (0, 5));
+        assert!((merged[0].value - 100.0).abs() < 1e-10);
+        assert_eq!((merged[1].start, merged[1].end), (5, 10));
+        assert!((merged[1].value - 193.49).abs() < 1e-10);
+        assert_eq!((merged[2].start, merged[2].end), (30, 40));
+        assert!((merged[2].value - 5.0).abs() < 1e-10);
+    }
+
+    /// Scores must reach disk the way Python's `repr` writes them: 44.0, not 44.
+    #[test]
+    fn test_format_value_matches_python_repr() {
+        assert_eq!(format_value(44.0), "44.0");
+        assert_eq!(format_value(5.0), "5.0");
+        assert_eq!(format_value(-0.0), "-0.0");
+        assert_eq!(format_value(83.15), "83.15");
+        assert_eq!(format_value(95.8), "95.8");
+        assert_eq!(format_value(0.0), "0.0");
     }
 }

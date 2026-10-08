@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 /// Chain file path for tests
-const CHAIN_FILE: &str = "ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz";
+const CHAIN_FILE: &str = "tests/data/GRCh37_to_GRCh38.chain.gz";
 
 /// Check if CrossMap is available
 fn crossmap_available() -> bool {

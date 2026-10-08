@@ -594,7 +594,7 @@ def main():
     parser.add_argument("--format", "-f", choices=["bed", "vcf", "gff", "bam"],
                         default="bed", help="Input file format")
     parser.add_argument("--chain", "-c", type=Path,
-                        default=Path("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz"),
+                        default=Path("tests/data/GRCh37_to_GRCh38.chain.gz"),
                         help="Chain file for coordinate conversion")
     parser.add_argument("--output-dir", "-o", type=Path,
                         default=Path("results/accuracy"),

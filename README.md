@@ -37,9 +37,10 @@
 Download from [Releases](https://github.com/biodancerwangzhi/fast-crossmap/releases):
 
 ```bash
-# Linux (x64)
-wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-linux-x64.tar.gz
-tar -xzf fast-crossmap-linux-x64.tar.gz
+# Linux (x86_64, glibc >= 2.34)
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-linux-x86_64.tar.gz
+tar -xzf fcm-0.5.0-linux-x86_64.tar.gz
+cd fcm-0.5.0-linux-x86_64
 chmod +x fast-crossmap
 ./fast-crossmap --help
 
@@ -48,16 +49,16 @@ sudo mv fast-crossmap /usr/local/bin/
 # Or: export PATH="$PWD:$PATH"
 
 # Linux (ARM64)
-wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-linux-arm64.tar.gz
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-linux-arm64.tar.gz
 
 # macOS (Apple Silicon)
-wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-macos-arm64.tar.gz
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-macos-arm64.tar.gz
 
 # macOS (Intel)
-wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fast-crossmap-macos-x64.tar.gz
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-macos-x86_64.tar.gz
 
 # Windows (x64) - Note: No BAM support
-# Download fast-crossmap-windows-x64.zip from Releases
+# Download fcm-0.5.0-windows-x64.zip from Releases
 ```
 
 ### Build from Source

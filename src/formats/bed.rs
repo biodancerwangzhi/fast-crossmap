@@ -6,10 +6,8 @@
 
 use crate::core::{CoordinateMapper, MappingSegment, Strand};
 use memchr::memchr;
-use rayon::prelude::*;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// BED record representation for output
 #[derive(Debug, Clone)]
@@ -657,9 +655,6 @@ impl Default for ParseBuffer {
     }
 }
 
-/// Chunk size for parallel processing
-const CHUNK_SIZE: usize = 10000;
-
 /// Convert a BED file using the coordinate mapper (sequential version)
 /// 
 /// # Arguments
@@ -764,10 +759,15 @@ fn convert_bed_sequential<P: AsRef<Path>>(
     Ok(stats)
 }
 
-/// Parallel BED conversion using rayon
-/// 
-/// Reads all lines into memory, processes in parallel chunks, then writes output.
-/// This trades memory for speed - suitable for files that fit in memory.
+/// Parallel BED conversion through the ordered pipeline.
+///
+/// Read, convert and write all overlap, and no more than a few batches are held
+/// in memory at once — unlike the previous "read every line, convert, then
+/// write every line" version, whose peak RSS grew with the input.
+///
+/// Header lines (`#`, `track`, `browser`) ride through the same pipeline as data
+/// lines, so they land at the position they occupied in the input, exactly as in
+/// the sequential path.
 fn convert_bed_parallel<P: AsRef<Path>>(
     input: P,
     output: P,
@@ -775,111 +775,133 @@ fn convert_bed_parallel<P: AsRef<Path>>(
     mapper: &CoordinateMapper,
     threads: usize,
 ) -> Result<ConversionStats, BedParseError> {
-    // Configure rayon thread pool
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .map_err(|e| BedParseError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Failed to create thread pool: {}", e)
-        )))?;
-    
-    // Read all lines
+    use crate::core::pipeline::{batch_size, run_ordered_pipeline, Batch, Conversion, LineBatch};
+
     let input_file = std::fs::File::open(input.as_ref())?;
-    let reader = BufReader::with_capacity(128 * 1024, input_file);
-    
-    let mut header_lines = Vec::new();
-    let mut data_lines = Vec::new();
-    
-    for line_result in reader.lines() {
-        let line = line_result?;
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with('#') || line.starts_with("track") || line.starts_with("browser") {
-            header_lines.push(line);
-        } else {
-            data_lines.push(line);
-        }
-    }
-    
-    // Atomic counters for stats
-    let total = AtomicUsize::new(0);
-    let success = AtomicUsize::new(0);
-    let failed = AtomicUsize::new(0);
-    let multi_map = AtomicUsize::new(0);
-    
-    // Process in parallel
-    let results: Vec<(Vec<String>, Vec<String>)> = pool.install(|| {
-        data_lines
-            .par_chunks(CHUNK_SIZE)
-            .map(|chunk| {
-                let mut success_lines = Vec::with_capacity(chunk.len());
-                let mut failed_lines = Vec::new();
-                
-                for line in chunk {
-                    total.fetch_add(1, Ordering::Relaxed);
-                    
-                    match BedRecordView::parse(line.as_bytes()) {
-                        Ok(view) => {
-                            let input_strand = view.strand().unwrap_or(Strand::Plus);
-                            
-                            match convert_bed_record(&view, mapper, input_strand) {
-                                ConversionResult::Success(output_line) => {
-                                    success_lines.push(output_line);
-                                    success.fetch_add(1, Ordering::Relaxed);
-                                }
-                                ConversionResult::MultiMap(output_lines) => {
-                                    success_lines.extend(output_lines);
-                                    success.fetch_add(1, Ordering::Relaxed);
-                                    multi_map.fetch_add(1, Ordering::Relaxed);
-                                }
-                                ConversionResult::Failed(unmapped_line) => {
-                                    failed_lines.push(unmapped_line);
-                                    failed.fetch_add(1, Ordering::Relaxed);
-                                }
-                                ConversionResult::PassThrough(pass_line) => {
-                                    success_lines.push(pass_line);
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            failed_lines.push(line.clone());
-                            failed.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                }
-                
-                (success_lines, failed_lines)
-            })
-            .collect()
-    });
-    
-    // Write output files with BufWriter for performance
+    let mut reader = BufReader::with_capacity(128 * 1024, input_file);
+
     let mut output_file = BufWriter::with_capacity(128 * 1024, std::fs::File::create(output.as_ref())?);
     let mut unmap_file = BufWriter::with_capacity(64 * 1024, std::fs::File::create(unmap.as_ref())?);
-    
-    // Write headers first
-    for header in &header_lines {
-        writeln!(output_file, "{}", header)?;
+
+    let mut stats = ConversionStats::default();
+    let mut line_buf: Vec<u8> = Vec::with_capacity(4096);
+
+    run_ordered_pipeline::<LineBatch, BedOut, _, _, _>(
+        threads,
+        |line: &[u8], out: &mut BedOut| {
+            if line.starts_with(b"#") || line.starts_with(b"track") || line.starts_with(b"browser") {
+                out.header = true;
+                return true;
+            }
+            let Ok(view) = BedRecordView::parse(line) else {
+                out.parse_error = true;
+                return false;
+            };
+            let input_strand = view.strand().unwrap_or(Strand::Plus);
+            match convert_bed_record(&view, mapper, input_strand) {
+                ConversionResult::Success(output_line) => {
+                    out.text = output_line;
+                    true
+                }
+                ConversionResult::MultiMap(output_lines) => {
+                    out.text = output_lines.join("\n");
+                    out.multi_map = true;
+                    true
+                }
+                ConversionResult::Failed(unmapped_line) => {
+                    out.text = unmapped_line;
+                    false
+                }
+                ConversionResult::PassThrough(pass_line) => {
+                    out.text = pass_line;
+                    out.pass_through = true;
+                    true
+                }
+            }
+        },
+        |batch: &mut LineBatch| {
+            while batch.len() < batch_size() && batch.buffer.len() < MAX_BATCH_BYTES {
+                line_buf.clear();
+                if reader.read_until(b'\n', &mut line_buf)? == 0 {
+                    break;
+                }
+                let line = trim_ascii_end(&line_buf);
+                if line.is_empty() {
+                    continue;
+                }
+                batch.push_line(line);
+            }
+            Ok(batch.len())
+        },
+        |batch: &LineBatch, results: &[Conversion<BedOut>]| {
+            for (i, result) in results.iter().enumerate() {
+                let (start, end) = batch.lines[i];
+                let original = &batch.buffer[start..end];
+                let out = &result.output;
+                if out.header {
+                    output_file.write_all(original)?;
+                    output_file.write_all(b"\n")?;
+                    continue;
+                }
+                stats.total += 1;
+                if result.mapped {
+                    output_file.write_all(out.text.as_bytes())?;
+                    output_file.write_all(b"\n")?;
+                    if !out.pass_through {
+                        // Matches the sequential path: a pass-through record is
+                        // emitted but not counted as a success.
+                        stats.success += 1;
+                        if out.multi_map {
+                            stats.multi_map += 1;
+                        }
+                    }
+                } else {
+                    // A parse error writes the raw input line; a failed mapping
+                    // writes the line `convert_bed_record` reconstructed.
+                    if out.parse_error {
+                        unmap_file.write_all(original)?;
+                    } else {
+                        unmap_file.write_all(out.text.as_bytes())?;
+                    }
+                    unmap_file.write_all(b"\n")?;
+                    stats.failed += 1;
+                }
+            }
+            Ok(())
+        },
+    )
+    .map_err(BedParseError::Io)?;
+
+    Ok(stats)
+}
+
+/// Upper bound on the bytes in one pipeline batch.
+const MAX_BATCH_BYTES: usize = 4 << 20;
+
+/// One converted BED line.
+#[derive(Default)]
+struct BedOut {
+    /// The converted line, or several newline-joined lines for a multi-map.
+    text: String,
+    /// Whether the line was a `#`/`track`/`browser` header and passes through.
+    header: bool,
+    /// Whether the record mapped to more than one place.
+    multi_map: bool,
+    /// Whether the record was passed through without being counted.
+    pass_through: bool,
+    /// Whether the line could not be parsed, so the raw input is unmapped.
+    parse_error: bool,
+}
+
+/// Strip a trailing `\n` and any trailing spaces/tabs/`\r`, mirroring the
+/// sequential path's `trim_end`.
+#[inline]
+fn trim_ascii_end(buf: &[u8]) -> &[u8] {
+    let mut end = buf.len();
+    while end > 0 && matches!(buf[end - 1], b'\n' | b'\r' | b' ' | b'\t') {
+        end -= 1;
     }
-    
-    // Write results (maintaining chunk order)
-    for (success_lines, failed_lines) in results {
-        for line in success_lines {
-            writeln!(output_file, "{}", line)?;
-        }
-        for line in failed_lines {
-            writeln!(unmap_file, "{}", line)?;
-        }
-    }
-    
-    Ok(ConversionStats {
-        total: total.load(Ordering::Relaxed),
-        success: success.load(Ordering::Relaxed),
-        failed: failed.load(Ordering::Relaxed),
-        multi_map: multi_map.load(Ordering::Relaxed),
-    })
+    &buf[..end]
 }
 
 #[cfg(test)]

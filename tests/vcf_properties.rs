@@ -242,7 +242,7 @@ fn test_complex_info_field() {
 /// Integration test: VCF conversion with real chain file
 #[test]
 fn test_vcf_conversion_with_crossmap() {
-    let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
     
     if !chain_path.exists() {
         eprintln!("Skipping test: chain file not found");
@@ -294,7 +294,7 @@ chr2\t50000\trs3\tG\tA\t50\tPASS\tDP=150\tGT\t0/1
 /// Test parallel VCF conversion determinism
 #[test]
 fn test_vcf_parallel_determinism() {
-    let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
     
     if !chain_path.exists() {
         eprintln!("Skipping test: chain file not found");
@@ -445,7 +445,7 @@ fn test_vcf_breakend() {
 fn test_vcf_vs_crossmap() {
     use std::process::Command;
     
-    let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
     
     if !chain_path.exists() {
         eprintln!("Skipping test: chain file not found");

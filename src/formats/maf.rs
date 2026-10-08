@@ -9,7 +9,6 @@ use crate::core::{dna, CoordinateMapper, Strand};
 use memchr::memchr;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// MAF parsing error
 #[derive(Debug, Clone)]
@@ -221,72 +220,6 @@ impl<'a> MafRecordView<'a> {
 }
 
 
-/// Stub for FASTA reader (reference genome access)
-pub mod fasta_stub {
-    use std::path::Path;
-    use std::collections::HashMap;
-    use std::io::{BufRead, BufReader};
-    
-    /// Simple FASTA reader for reference genome
-    /// Loads all sequences into memory at once for fast access
-    pub struct FastaReader {
-        /// Chromosome sequences
-        sequences: HashMap<String, Vec<u8>>,
-    }
-    
-    impl FastaReader {
-        /// Open a FASTA file and load all sequences into memory
-        pub fn open<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
-            let file = std::fs::File::open(path)?;
-            let reader = BufReader::new(file);
-            let mut sequences = HashMap::new();
-            let mut current_name = String::new();
-            let mut current_seq = Vec::new();
-            
-            for line in reader.lines() {
-                let line = line?;
-                if line.starts_with('>') {
-                    if !current_name.is_empty() {
-                        sequences.insert(current_name.clone(), current_seq.clone());
-                    }
-                    current_name = line[1..].split_whitespace().next().unwrap_or("").to_string();
-                    current_seq.clear();
-                } else {
-                    current_seq.extend(line.trim().bytes());
-                }
-            }
-            
-            if !current_name.is_empty() {
-                sequences.insert(current_name, current_seq);
-            }
-            
-            Ok(Self { sequences })
-        }
-        
-        /// Fetch sequence at given position (0-based, half-open)
-        pub fn fetch(&self, chrom: &str, start: u64, end: u64) -> Option<String> {
-            // Try with and without chr prefix
-            let seq = self.sequences.get(chrom)
-                .or_else(|| {
-                    if chrom.starts_with("chr") {
-                        self.sequences.get(&chrom[3..])
-                    } else {
-                        self.sequences.get(&format!("chr{}", chrom))
-                    }
-                })?;
-            
-            let start = start as usize;
-            let end = (end as usize).min(seq.len());
-            
-            if start >= seq.len() {
-                return None;
-            }
-            
-            Some(String::from_utf8_lossy(&seq[start..end]).to_string())
-        }
-    }
-}
-
 /// Conversion statistics
 #[derive(Debug, Clone, Default)]
 pub struct ConversionStats {
@@ -297,93 +230,107 @@ pub struct ConversionStats {
 }
 
 
-/// Convert a single MAF record
-fn convert_maf_record(
-    view: &MafRecordView,
-    mapper: &CoordinateMapper,
-    ref_genome: Option<&fasta_stub::FastaReader>,
-    target_build: &str,
-) -> Option<String> {
-    // Get coordinates (MAF uses 1-based coordinates)
-    let start = view.start_position().ok()?;
-    let end = view.end_position().ok()?;
-    let chrom = view.chromosome();
-    
-    // Convert to 0-based for mapping
-    // CrossMap uses: start = int(fields[5])-1, end = int(fields[6])
-    let start_0based = start - 1;
-    let end_0based = end; // end is exclusive in 0-based
-    
-    // Map coordinates - CrossMap always uses '+' strand for mapping
-    let segments = mapper.map(chrom, start_0based, end_0based, Strand::Plus)?;
-    
-    // Require single mapping (len(a) == 2 in CrossMap means one mapping)
-    if segments.len() != 1 {
-        return None;
-    }
-    
-    let seg = &segments[0];
-    let target_chrom = &seg.target.chrom;
-    let target_start = seg.target.start + 1; // Convert back to 1-based
-    let target_end = seg.target.end;
-    let target_strand = seg.target.strand;
-    
-    // Get new reference allele from target genome if available
-    // CrossMap: fields[10] = refFasta.fetch(target_chr, target_start, target_end).upper()
-    // Then: if a[1][3] == '-': fields[10] = revcomp_DNA(fields[10], True)
-    let new_ref = if let Some(ref_reader) = ref_genome {
-        match ref_reader.fetch(target_chrom, seg.target.start, seg.target.end) {
-            Some(seq) => {
-                let seq_upper = seq.to_uppercase();
-                // Reverse complement if target strand is negative (matches CrossMap)
-                if target_strand == Strand::Minus {
-                    dna::revcomp(&seq_upper)
-                } else {
-                    seq_upper
-                }
-            }
-            None => return None, // CrossMap fails if fetch fails
-        }
-    } else {
-        // No reference genome - this shouldn't happen for MAF
-        view.reference_allele().to_string()
-    };
-    
-    // Build output line with updated fields
-    let mut output_fields: Vec<String> = view.fields().iter().map(|s| s.to_string()).collect();
-    
-    // Update Chromosome
-    output_fields[view.indices.chromosome] = target_chrom.clone();
-    
-    // Update Start_Position
-    output_fields[view.indices.start_position] = target_start.to_string();
-    
-    // Update End_Position
-    output_fields[view.indices.end_position] = target_end.to_string();
-    
-    // Update Reference_Allele
-    output_fields[view.indices.reference_allele] = new_ref;
-    
-    // Update NCBI_Build (CrossMap: fields[3] = ref_name)
-    output_fields[view.indices.ncbi_build] = target_build.to_string();
-    
-    // NOTE: CrossMap does NOT update the Strand field, only the Reference_Allele
-    // So we should NOT flip the strand here to match CrossMap behavior
-    
-    Some(output_fields.join("\t"))
+/// Intermediate result from coordinate mapping (no ref genome needed)
+struct MappedRecord {
+    fields: Vec<String>,
+    indices: MafColumnIndices,
+    target_chrom: String,
+    target_start_0based: u64,
+    target_end_0based: u64,
+    target_start_1based: u64,
+    target_end_1based: u64,
+    target_strand: Strand,
 }
 
-/// Convert a MAF file
-///
-/// # Arguments
-/// * `input` - Input MAF file path
-/// * `output` - Output MAF file path
-/// * `mapper` - Coordinate mapper
-/// * `ref_genome` - Optional path to target reference genome (FASTA)
-/// * `target_build` - Target assembly name (e.g., "GRCh38")
-///
-/// # Returns
-/// Conversion statistics
+/// A pending item in a processing chunk: either mapped or failed
+enum ChunkItem {
+    Mapped(MappedRecord),
+    Failed(String),
+}
+
+const CHUNK_SIZE: usize = 10_000;
+
+fn flush_chunk(
+    chunk: &mut Vec<ChunkItem>,
+    ref_reader: Option<&crate::core::fasta::FastaReader>,
+    output_file: &mut BufWriter<std::fs::File>,
+    unmap_file: &mut BufWriter<std::fs::File>,
+    target_build: &str,
+    success: &mut usize,
+    failed: &mut usize,
+) -> std::io::Result<()> {
+    if chunk.is_empty() {
+        return Ok(());
+    }
+
+    // Collect mapped indices and build batch requests
+    let mapped_indices: Vec<usize> = chunk.iter().enumerate()
+        .filter_map(|(i, item)| matches!(item, ChunkItem::Mapped(_)).then_some(i))
+        .collect();
+
+    let ref_seqs = if let Some(reader) = ref_reader {
+        let requests: Vec<(String, u64, u64)> = mapped_indices.iter()
+            .map(|&i| {
+                if let ChunkItem::Mapped(rec) = &chunk[i] {
+                    (rec.target_chrom.clone(), rec.target_start_0based, rec.target_end_0based)
+                } else {
+                    unreachable!()
+                }
+            })
+            .collect();
+        Some(reader.batch_fetch(&requests))
+    } else {
+        None
+    };
+
+    let mut fetch_idx = 0;
+    for item in chunk.drain(..) {
+        match item {
+            ChunkItem::Mapped(rec) => {
+                let new_ref = if let Some(ref seqs) = ref_seqs {
+                    match &seqs[fetch_idx] {
+                        Some(seq) => {
+                            let seq_upper = seq.to_uppercase();
+                            Some(if rec.target_strand == Strand::Minus {
+                                dna::revcomp(&seq_upper)
+                            } else {
+                                seq_upper
+                            })
+                        }
+                        None => None,
+                    }
+                } else {
+                    Some(rec.fields[rec.indices.reference_allele].clone())
+                };
+
+                if let Some(new_ref) = new_ref {
+                    let mut out_fields = rec.fields;
+                    out_fields[rec.indices.chromosome] = rec.target_chrom;
+                    out_fields[rec.indices.start_position] = rec.target_start_1based.to_string();
+                    out_fields[rec.indices.end_position] = rec.target_end_1based.to_string();
+                    out_fields[rec.indices.reference_allele] = new_ref;
+                    out_fields[rec.indices.ncbi_build] = target_build.to_string();
+                    writeln!(output_file, "{}", out_fields.join("\t"))?;
+                    *success += 1;
+                } else {
+                    writeln!(unmap_file, "{}", rec.fields.join("\t"))?;
+                    *failed += 1;
+                }
+
+                if ref_seqs.is_some() {
+                    fetch_idx += 1;
+                }
+            }
+            ChunkItem::Failed(line) => {
+                writeln!(unmap_file, "{}", line)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Convert a MAF file using chunked batch-fetch for low memory.
 pub fn convert_maf<P: AsRef<Path>>(
     input: P,
     output: P,
@@ -393,91 +340,111 @@ pub fn convert_maf<P: AsRef<Path>>(
 ) -> Result<ConversionStats, std::io::Error> {
     let input_file = std::fs::File::open(input.as_ref())?;
     let reader = BufReader::with_capacity(128 * 1024, input_file);
-    
-    // Prepare output files with BufWriter for performance
+
     let output_path = output.as_ref();
     let unmap_path = output_path.with_extension("maf.unmap");
-    
+
     let mut output_file = BufWriter::with_capacity(128 * 1024, std::fs::File::create(output_path)?);
     let mut unmap_file = BufWriter::with_capacity(64 * 1024, std::fs::File::create(&unmap_path)?);
-    
-    // Open reference genome if provided
+
     let ref_reader = ref_genome
-        .map(|p| fasta_stub::FastaReader::open(p.as_ref()))
+        .map(|p| crate::core::fasta::FastaReader::open(p.as_ref()))
         .transpose()?;
-    
-    // Counters
-    let total = AtomicUsize::new(0);
-    let success = AtomicUsize::new(0);
-    let failed = AtomicUsize::new(0);
-    let headers = AtomicUsize::new(0);
-    
+
+    let mut total: usize = 0;
+    let mut success: usize = 0;
+    let mut failed: usize = 0;
+    let mut headers: usize = 0;
+
     let mut column_indices: Option<MafColumnIndices> = None;
-    
+    let mut chunk: Vec<ChunkItem> = Vec::with_capacity(CHUNK_SIZE);
+
     for line in reader.lines() {
         let line = line?;
-        
+
         if line.is_empty() {
             continue;
         }
-        
-        // Handle header/comment lines
+
         if line.starts_with('#') {
             writeln!(output_file, "{}", line)?;
-            headers.fetch_add(1, Ordering::Relaxed);
+            headers += 1;
             continue;
         }
-        
-        // First non-comment line should be the column header
+
         if column_indices.is_none() {
             match MafColumnIndices::from_header(&line) {
                 Ok(indices) => {
                     column_indices = Some(indices);
                     writeln!(output_file, "{}", line)?;
-                    headers.fetch_add(1, Ordering::Relaxed);
+                    headers += 1;
                     continue;
                 }
-                Err(_) => {
-                    // Not a valid header, treat as data
-                }
+                Err(_) => {}
             }
         }
-        
-        // Need column indices to process data
+
         let indices = match &column_indices {
             Some(i) => i,
             None => {
-                writeln!(unmap_file, "{}", line)?;
-                failed.fetch_add(1, Ordering::Relaxed);
+                chunk.push(ChunkItem::Failed(line));
+                failed += 1;
+                if chunk.len() >= CHUNK_SIZE {
+                    flush_chunk(&mut chunk, ref_reader.as_ref(), &mut output_file, &mut unmap_file, target_build, &mut success, &mut failed)?;
+                }
                 continue;
             }
         };
-        
-        total.fetch_add(1, Ordering::Relaxed);
-        
-        // Parse and convert
-        match MafRecordView::parse(line.as_bytes(), indices) {
-            Ok(view) => {
-                if let Some(converted) = convert_maf_record(&view, mapper, ref_reader.as_ref(), target_build) {
-                    writeln!(output_file, "{}", converted)?;
-                    success.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    writeln!(unmap_file, "{}", line)?;
-                    failed.fetch_add(1, Ordering::Relaxed);
-                }
+
+        total += 1;
+
+        let parsed = MafRecordView::parse(line.as_bytes(), indices);
+        let mapped = parsed.ok().and_then(|view| {
+            let start = view.start_position().ok()?;
+            let end = view.end_position().ok()?;
+            let chrom = view.chromosome();
+            let start_0based = start - 1;
+            let end_0based = end;
+
+            let segments = mapper.map(chrom, start_0based, end_0based, Strand::Plus)?;
+            if segments.len() != 1 {
+                return None;
             }
-            Err(_) => {
-                writeln!(unmap_file, "{}", line)?;
-                failed.fetch_add(1, Ordering::Relaxed);
+
+            let seg = &segments[0];
+            Some(MappedRecord {
+                fields: view.fields().iter().map(|s| s.to_string()).collect(),
+                indices: indices.clone(),
+                target_chrom: seg.target.chrom.clone(),
+                target_start_0based: seg.target.start,
+                target_end_0based: seg.target.end,
+                target_start_1based: seg.target.start + 1,
+                target_end_1based: seg.target.end,
+                target_strand: seg.target.strand,
+            })
+        });
+
+        match mapped {
+            Some(rec) => chunk.push(ChunkItem::Mapped(rec)),
+            None => {
+                chunk.push(ChunkItem::Failed(line));
+                failed += 1;
             }
         }
+
+        if chunk.len() >= CHUNK_SIZE {
+            flush_chunk(&mut chunk, ref_reader.as_ref(), &mut output_file, &mut unmap_file, target_build, &mut success, &mut failed)?;
+        }
     }
-    
+
+    // Flush remaining
+    flush_chunk(&mut chunk, ref_reader.as_ref(), &mut output_file, &mut unmap_file, target_build, &mut success, &mut failed)?;
+
     Ok(ConversionStats {
-        total: total.load(Ordering::Relaxed),
-        success: success.load(Ordering::Relaxed),
-        failed: failed.load(Ordering::Relaxed),
-        headers: headers.load(Ordering::Relaxed),
+        total,
+        success,
+        failed,
+        headers,
     })
 }
 

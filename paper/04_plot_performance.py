@@ -84,38 +84,41 @@ def load_benchmark_data():
 
 def plot_single_thread_comparison(data, ax, format_type="BED", tool_order=None):
     """
-    绘制单线程性能对比 (箱线图或条形图)
-    
-    参数:
-        data: 基准测试数据
-        ax: matplotlib axes
-        format_type: "BED" 或 "BAM"
-        tool_order: 工具顺序列表
+    绘制单线程性能对比 (箱线图)
+    支持多数据集格式：使用第一个数据集作为代表
     """
     if not data:
-        ax.text(0.5, 0.5, f'No {format_type} data', ha='center', va='center', 
+        ax.text(0.5, 0.5, f'No {format_type} data', ha='center', va='center',
                 transform=ax.transAxes, fontsize=12)
-        ax.set_title(f'{format_type} Single-Thread', 
+        ax.set_title(f'{format_type} Single-Thread',
                      fontsize=11, fontweight='bold')
         return
-    
+
     if tool_order is None:
         tool_order = TOOL_ORDER
-    
-    results = {r["tool"]: r for r in data["results"]}
+
+    results = data.get("results", [])
+
+    # Multi-dataset format: use first dataset as representative
+    if results and "dataset_name" in results[0]:
+        first_ds = results[0]["dataset_name"]
+        results_map = {r["tool"]: r for r in results if r["dataset_name"] == first_ds}
+        ds_label = first_ds
+    else:
+        results_map = {r["tool"]: r for r in results}
+        ds_label = ""
     
     # Prepare data
     tools = []
     all_times_data = []
-    
+
     for tool in tool_order:
-        if tool in results and results[tool]["success"]:
+        if tool in results_map and results_map[tool]["success"]:
             tools.append(tool)
-            # Get all run times (for box plot)
-            if "all_times" in results[tool] and results[tool]["all_times"]:
-                all_times_data.append(results[tool]["all_times"])
+            if "all_times" in results_map[tool] and results_map[tool]["all_times"]:
+                all_times_data.append(results_map[tool]["all_times"])
             else:
-                all_times_data.append([results[tool]["execution_time_sec"]])
+                all_times_data.append([results_map[tool]["execution_time_sec"]])
     
     if not tools:
         ax.text(0.5, 0.5, 'No valid data', ha='center', va='center', transform=ax.transAxes)
@@ -259,12 +262,13 @@ def create_mock_multithread_data(single_data, format_type="BED"):
     """
     if not single_data:
         return None
-    
-    results = {r["tool"]: r for r in single_data["results"]}
-    if "FastCrossMap" not in results or not results["FastCrossMap"]["success"]:
+
+    results_list = single_data.get("results", [])
+    fc = next((r for r in results_list if r.get("tool") == "FastCrossMap" and r.get("success")), None)
+    if not fc:
         return None
-    
-    base_time = results["FastCrossMap"]["execution_time_sec"]
+
+    base_time = fc["execution_time_sec"]
     
     # 模拟数据 - 假设接近线性扩展
     # 实际应该运行真实测试
@@ -315,7 +319,8 @@ def main():
     
     # (a) BED 单线程对比
     if bed_data:
-        print(f"BED data: {bed_data['input_records']:,} records")
+        n_datasets = bed_data.get("num_datasets", 1)
+        print(f"BED data: {n_datasets} dataset(s)")
         plot_single_thread_comparison(bed_data, axes[0, 0], "BED", TOOL_ORDER)
     else:
         axes[0, 0].text(0.5, 0.5, 'No BED data', ha='center', va='center', 
@@ -327,7 +332,8 @@ def main():
     
     # (c) BAM 单线程对比
     if bam_data:
-        print(f"BAM data: {bam_data['input_size_mb']:.2f} MB")
+        n_datasets = bam_data.get("num_datasets", 1)
+        print(f"BAM data: {n_datasets} dataset(s)")
         plot_single_thread_comparison(bam_data, axes[1, 0], "BAM", BAM_TOOL_ORDER)
     else:
         axes[1, 0].text(0.5, 0.5, 'No BAM data', ha='center', va='center', 
@@ -412,33 +418,37 @@ def main():
     print("=" * 60)
     
     if bed_data:
-        results = {r["tool"]: r for r in bed_data["results"]}
-        print("\nBED format (single-thread comparison):")
+        results_list = bed_data.get("results", [])
+        first_ds = results_list[0]["dataset_name"] if results_list and "dataset_name" in results_list[0] else ""
+        results_map = {r["tool"]: r for r in results_list if r.get("dataset_name") == first_ds} if first_ds else {r["tool"]: r for r in results_list}
+        print(f"\nBED format (single-thread, dataset: {first_ds}):")
         for tool in TOOL_ORDER:
-            if tool in results and results[tool]["success"]:
-                t = results[tool]["execution_time_sec"]
+            if tool in results_map and results_map[tool]["success"]:
+                t = results_map[tool]["execution_time_sec"]
                 threads = "4T*" if tool == "FastRemap" else "1T"
                 print(f"  {tool} ({threads}): {t:.2f}s")
-        
-        if "FastCrossMap" in results and "CrossMap" in results:
-            fc = results["FastCrossMap"]
-            cm = results["CrossMap"]
+
+        if "FastCrossMap" in results_map and "CrossMap" in results_map:
+            fc = results_map["FastCrossMap"]
+            cm = results_map["CrossMap"]
             if fc["success"] and cm["success"]:
                 speedup = cm["execution_time_sec"] / fc["execution_time_sec"]
                 print(f"  → FastCrossMap vs CrossMap: {speedup:.1f}x speedup")
-    
+
     if bam_data:
-        results = {r["tool"]: r for r in bam_data["results"]}
-        print("\nBAM format (single-thread comparison):")
+        results_list = bam_data.get("results", [])
+        first_ds = results_list[0]["dataset_name"] if results_list and "dataset_name" in results_list[0] else ""
+        results_map = {r["tool"]: r for r in results_list if r.get("dataset_name") == first_ds} if first_ds else {r["tool"]: r for r in results_list}
+        print(f"\nBAM format (single-thread, dataset: {first_ds}):")
         for tool in BAM_TOOL_ORDER:
-            if tool in results and results[tool]["success"]:
-                t = results[tool]["execution_time_sec"]
+            if tool in results_map and results_map[tool]["success"]:
+                t = results_map[tool]["execution_time_sec"]
                 threads = "4T*" if tool == "FastRemap" else "1T"
                 print(f"  {tool} ({threads}): {t:.2f}s")
-        
-        if "FastCrossMap" in results and "CrossMap" in results:
-            fc = results["FastCrossMap"]
-            cm = results["CrossMap"]
+
+        if "FastCrossMap" in results_map and "CrossMap" in results_map:
+            fc = results_map["FastCrossMap"]
+            cm = results_map["CrossMap"]
             if fc["success"] and cm["success"]:
                 speedup = cm["execution_time_sec"] / fc["execution_time_sec"]
                 print(f"  → FastCrossMap vs CrossMap: {speedup:.1f}x speedup")

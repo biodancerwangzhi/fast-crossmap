@@ -449,7 +449,7 @@ def main():
     parser.add_argument("--input", "-i", type=Path, required=True,
                         help="Input BAM file for testing")
     parser.add_argument("--chain", "-c", type=Path,
-                        default=Path("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz"),
+                        default=Path("tests/data/GRCh37_to_GRCh38.chain.gz"),
                         help="Chain file for coordinate conversion")
     parser.add_argument("--output-dir", "-o", type=Path,
                         default=Path("results/memory_test"),

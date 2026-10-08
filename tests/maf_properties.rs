@@ -129,7 +129,7 @@ proptest! {
 /// Test MAF conversion with real chain file
 #[test]
 fn test_maf_conversion_basic() {
-    let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
     
     if !chain_path.exists() {
         eprintln!("Skipping test: chain file not found");
@@ -197,7 +197,7 @@ EGFR\t1956\tBCM\tGRCh37\tchr2\t200000\t200000\t+\tMissense_Mutation\tSNP\tA\tA\t
 fn test_maf_vs_crossmap() {
     use std::process::Command;
     
-    let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
     
     if !chain_path.exists() {
         eprintln!("Skipping test: chain file not found");

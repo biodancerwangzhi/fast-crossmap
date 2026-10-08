@@ -5,12 +5,11 @@
 //!
 //! **Validates: Requirements 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7**
 
+use crate::core::pipeline::{batch_size, run_ordered_pipeline, Batch, Conversion, LineBatch};
 use crate::core::{CoordinateMapper, Strand};
 use memchr::memchr;
-use rayon::prelude::*;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// GFF/GTF parse error
 #[derive(Debug, Clone)]
@@ -172,70 +171,87 @@ pub struct ConversionStats {
     pub comments: usize,
 }
 
-/// Convert a single GFF record
-/// Returns None if conversion fails (unmapped, size changed, or multiple mappings)
-fn convert_gff_record(
+/// Convert a single GFF record, appending the mapped line to `out`.
+///
+/// Returns `true` on success (record mapped to exactly one location with an
+/// unchanged size), or `false` if it could not be mapped (unmapped, size
+/// changed, or multiple mappings).
+fn convert_gff_record_into(
     view: &GffRecordView,
     mapper: &CoordinateMapper,
-) -> Option<String> {
+    out: &mut String,
+) -> bool {
+    use std::fmt::Write as _;
+
     // Get query strand (use Plus if unstranded)
     let query_strand = view.strand.unwrap_or(Strand::Plus);
-    
+
     // Convert 1-based GFF coordinates to 0-based for mapping
     // GFF: [start, end] 1-based inclusive
     // Internal: [start, end) 0-based half-open
     let start_0based = view.start - 1;
     let end_0based = view.end; // end is exclusive in 0-based
-    
+
     // Map coordinates
-    let segments = mapper.map(view.seqname, start_0based, end_0based, query_strand)?;
-    
-    // GFF requires exact match: single segment, no size change
-    if segments.is_empty() {
-        return None;
+    let segments = match mapper.map(view.seqname, start_0based, end_0based, query_strand) {
+        Some(s) => s,
+        None => return false,
+    };
+
+    // GFF requires an exact match: a single segment with no size change
+    if segments.len() != 1 {
+        return false;
     }
-    
-    // Multiple mappings = fail
-    if segments.len() > 1 {
-        return None;
-    }
-    
+
     let seg = &segments[0];
-    
-    // Check size preservation (exact match required)
+
     let original_size = view.size();
     let mapped_size = seg.target.end - seg.target.start;
     if mapped_size != original_size {
-        return None;
+        return false;
     }
-    
+
     // Convert back to 1-based coordinates for GFF output
     let new_start = seg.target.start + 1;
     let new_end = seg.target.end;
-    
-    // Determine output strand
-    // CrossMap behavior: use the strand from the mapping result
-    // fields[6] = a[1][3] in CrossMap's mapgff.py
+
+    // Determine output strand (CrossMap: fields[6] = a[1][3])
     let output_strand = seg.target.strand.to_char();
-    
-    // Build output line
-    Some(format!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-        seg.target.chrom,
-        view.source,
-        view.feature,
-        new_start,
-        new_end,
-        view.score,
-        output_strand,
-        view.frame,
-        view.attributes
-    ))
+
+    // Build output line in-place
+    out.push_str(&seg.target.chrom);
+    out.push('\t');
+    out.push_str(view.source);
+    out.push('\t');
+    out.push_str(view.feature);
+    out.push('\t');
+    let _ = write!(out, "{}", new_start);
+    out.push('\t');
+    let _ = write!(out, "{}", new_end);
+    out.push('\t');
+    out.push_str(view.score);
+    out.push('\t');
+    out.push(output_strand);
+    out.push('\t');
+    out.push_str(view.frame);
+    out.push('\t');
+    out.push_str(view.attributes);
+    true
 }
 
 
-/// Chunk size for parallel processing
-const CHUNK_SIZE: usize = 10000;
+/// Upper bound on the bytes in one pipeline batch, so a file with a few very
+/// long lines cannot make a batch unbounded.
+const MAX_BATCH_BYTES: usize = 4 << 20;
+
+/// One converted GFF line.
+#[derive(Default)]
+struct GffOut {
+    /// The converted line, valid when `comment` is false and the record mapped.
+    text: String,
+    /// Whether the line was a `#` comment and should pass through unchanged.
+    comment: bool,
+}
 
 /// Convert a GFF/GTF file
 ///
@@ -254,119 +270,145 @@ pub fn convert_gff<P: AsRef<Path>>(
     threads: usize,
 ) -> Result<ConversionStats, std::io::Error> {
     let input_file = std::fs::File::open(input.as_ref())?;
-    let reader = BufReader::with_capacity(128 * 1024, input_file);
-    
+    let mut reader = BufReader::with_capacity(128 * 1024, input_file);
+
     // Prepare output files with BufWriter for performance
     let output_path = output.as_ref();
     let unmap_path = output_path.with_extension("gff.unmap");
-    
+
     let mut output_file = BufWriter::with_capacity(128 * 1024, std::fs::File::create(output_path)?);
     let mut unmap_file = BufWriter::with_capacity(64 * 1024, std::fs::File::create(&unmap_path)?);
-    
-    // Atomic counters for parallel processing
-    let total = AtomicUsize::new(0);
-    let success = AtomicUsize::new(0);
-    let failed = AtomicUsize::new(0);
-    let comments = AtomicUsize::new(0);
-    
-    // Collect lines for processing
-    let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
-    
+
+    let mut total: usize = 0;
+    let mut success_count: usize = 0;
+    let mut failed_count: usize = 0;
+    let mut comment_count: usize = 0;
+
+    // Reused line buffer: avoids a fresh `String` allocation per line.
+    let mut buf: Vec<u8> = Vec::with_capacity(8 * 1024);
+
     if threads <= 1 {
-        // Sequential processing
-        for line in &lines {
-            // Skip empty lines
+        // Sequential processing — stream line by line through a reused buffer
+        let mut scratch = String::with_capacity(1024);
+        loop {
+            buf.clear();
+            if reader.read_until(b'\n', &mut buf)? == 0 {
+                break;
+            }
+            let line = trim_line_end(&buf);
             if line.is_empty() {
                 continue;
             }
-            
-            // Pass through comment lines (starting with #)
-            if line.starts_with('#') {
-                writeln!(output_file, "{}", line)?;
-                comments.fetch_add(1, Ordering::Relaxed);
+
+            if line[0] == b'#' {
+                output_file.write_all(line)?;
+                output_file.write_all(b"\n")?;
+                comment_count += 1;
                 continue;
             }
-            
-            total.fetch_add(1, Ordering::Relaxed);
-            
-            // Parse and convert
-            match GffRecordView::parse(line.as_bytes()) {
+
+            total += 1;
+
+            scratch.clear();
+            match GffRecordView::parse(line) {
                 Ok(view) => {
-                    if let Some(converted) = convert_gff_record(&view, mapper) {
-                        writeln!(output_file, "{}", converted)?;
-                        success.fetch_add(1, Ordering::Relaxed);
+                    if convert_gff_record_into(&view, mapper, &mut scratch) {
+                        output_file.write_all(scratch.as_bytes())?;
+                        output_file.write_all(b"\n")?;
+                        success_count += 1;
                     } else {
-                        writeln!(unmap_file, "{}", line)?;
-                        failed.fetch_add(1, Ordering::Relaxed);
+                        unmap_file.write_all(line)?;
+                        unmap_file.write_all(b"\n")?;
+                        failed_count += 1;
                     }
                 }
                 Err(_) => {
-                    // Parse error - write to unmap
-                    writeln!(unmap_file, "{}", line)?;
-                    failed.fetch_add(1, Ordering::Relaxed);
+                    unmap_file.write_all(line)?;
+                    unmap_file.write_all(b"\n")?;
+                    failed_count += 1;
                 }
             }
         }
     } else {
-        // Parallel processing
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .unwrap()
-            .install(|| {
-                // First pass: write comments (must be sequential to preserve order)
-                let mut data_lines: Vec<(usize, &String)> = Vec::new();
-                
-                for (idx, line) in lines.iter().enumerate() {
+        // Parallel processing — read, convert and write all overlap.
+        //
+        // Comments (`#…`) ride through the same pipeline as data lines and are
+        // routed to the output by the writer, so they keep their position
+        // relative to the records around them without any chunk-flush dance.
+        let mut line_buf: Vec<u8> = Vec::with_capacity(8 * 1024);
+        run_ordered_pipeline::<LineBatch, GffOut, _, _, _>(
+            threads,
+            |line: &[u8], out: &mut GffOut| {
+                if line.first() == Some(&b'#') {
+                    out.comment = true;
+                    return true;
+                }
+                match GffRecordView::parse(line) {
+                    Ok(view) => convert_gff_record_into(&view, mapper, &mut out.text),
+                    Err(_) => false,
+                }
+            },
+            |batch: &mut LineBatch| {
+                while batch.len() < batch_size() && batch.buffer.len() < MAX_BATCH_BYTES {
+                    line_buf.clear();
+                    if reader.read_until(b'\n', &mut line_buf)? == 0 {
+                        break;
+                    }
+                    let line = trim_line_end(&line_buf);
                     if line.is_empty() {
                         continue;
                     }
-                    
-                    if line.starts_with('#') {
-                        writeln!(output_file, "{}", line).ok();
-                        comments.fetch_add(1, Ordering::Relaxed);
+                    batch.push_line(line);
+                }
+                Ok(batch.len())
+            },
+            |batch: &LineBatch, results: &[Conversion<GffOut>]| {
+                for (i, result) in results.iter().enumerate() {
+                    let (start, end) = batch.lines[i];
+                    let original = &batch.buffer[start..end];
+                    if result.output.comment {
+                        output_file.write_all(original)?;
+                        output_file.write_all(b"\n")?;
+                        comment_count += 1;
                     } else {
-                        data_lines.push((idx, line));
-                    }
-                }
-                
-                // Process data lines in parallel
-                let results: Vec<(usize, Option<String>, &String)> = data_lines
-                    .par_chunks(CHUNK_SIZE)
-                    .flat_map(|chunk| {
-                        chunk.iter().map(|(idx, line)| {
-                            let result = GffRecordView::parse(line.as_bytes())
-                                .ok()
-                                .and_then(|view| convert_gff_record(&view, mapper));
-                            (*idx, result, *line)
-                        }).collect::<Vec<_>>()
-                    })
-                    .collect();
-                
-                // Write results (sequential to maintain order)
-                for (_idx, result, original) in results {
-                    total.fetch_add(1, Ordering::Relaxed);
-                    match result {
-                        Some(converted) => {
-                            writeln!(output_file, "{}", converted).ok();
-                            success.fetch_add(1, Ordering::Relaxed);
-                        }
-                        None => {
-                            writeln!(unmap_file, "{}", original).ok();
-                            failed.fetch_add(1, Ordering::Relaxed);
+                        total += 1;
+                        if result.mapped {
+                            output_file.write_all(result.output.text.as_bytes())?;
+                            output_file.write_all(b"\n")?;
+                            success_count += 1;
+                        } else {
+                            unmap_file.write_all(original)?;
+                            unmap_file.write_all(b"\n")?;
+                            failed_count += 1;
                         }
                     }
                 }
-            });
+                Ok(())
+            },
+        )?;
     }
-    
+
     Ok(ConversionStats {
-        total: total.load(Ordering::Relaxed),
-        success: success.load(Ordering::Relaxed),
-        failed: failed.load(Ordering::Relaxed),
-        comments: comments.load(Ordering::Relaxed),
+        total,
+        success: success_count,
+        failed: failed_count,
+        comments: comment_count,
     })
 }
+
+/// Strip a trailing `\n` and optional `\r` from a raw line read by `read_until`.
+#[inline]
+fn trim_line_end(buf: &[u8]) -> &[u8] {
+    let mut end = buf.len();
+    if end > 0 && buf[end - 1] == b'\n' {
+        end -= 1;
+    }
+    if end > 0 && buf[end - 1] == b'\r' {
+        end -= 1;
+    }
+    &buf[..end]
+}
+
 
 
 #[cfg(test)]

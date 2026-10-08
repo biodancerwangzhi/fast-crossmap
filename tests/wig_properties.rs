@@ -161,7 +161,7 @@ fn test_bedgraph_no_merge_different_values() {
 /// Test Wiggle conversion with real chain file
 #[test]
 fn test_wig_conversion_basic() {
-    let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
     
     if !chain_path.exists() {
         eprintln!("Skipping test: chain file not found");
@@ -198,38 +198,51 @@ variableStep chrom=chr2 span=10
     
     // Verify stats
     assert_eq!(stats.total, 5, "Should process 5 data points");
+    assert_eq!(stats.success, 5, "All 5 points should map");
+    assert_eq!(stats.failed, 0, "No point should fail to map");
     
-    // Read output and verify structure
-    let output_path = format!("{}.bgr", output_prefix.display());
+    // Read output and verify structure (variableStep Wiggle, not bedGraph)
+    let output_path = format!("{}.wig", output_prefix.display());
     let output = std::fs::read_to_string(&output_path).unwrap();
     
-    eprintln!("\n=== bedGraph Output ===");
+    eprintln!("\n=== Wiggle Output ===");
     for line in output.lines() {
         eprintln!("{}", line);
     }
     
-    // Check output format (tab-separated: chrom start end value)
+    // Wiggle output interleaves `variableStep chrom=... [span=...]` declarations
+    // with two-field data lines `<start>\t<value>` (1-based coordinates).
+    let mut declarations = 0;
+    let mut data_lines = 0;
     for line in output.lines() {
+        if line.starts_with("variableStep ") {
+            declarations += 1;
+            assert!(line.contains("chrom="), "declaration should name a chromosome");
+            continue;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
         let fields: Vec<&str> = line.split('\t').collect();
-        assert_eq!(fields.len(), 4, "bedGraph should have 4 fields");
-        
-        // Verify numeric fields
-        let _start: u64 = fields[1].parse().expect("start should be numeric");
-        let _end: u64 = fields[2].parse().expect("end should be numeric");
-        let _value: f64 = fields[3].parse().expect("value should be numeric");
+        assert_eq!(fields.len(), 2, "Wiggle data line should have 2 fields");
+        let _start: u64 = fields[0].parse().expect("start should be numeric");
+        let _value: f64 = fields[1].parse().expect("value should be numeric");
+        data_lines += 1;
     }
+    assert!(declarations >= 1, "should emit at least one variableStep block");
+    assert_eq!(data_lines, 5, "All 5 converted points should be written");
     
     // Cleanup
     let _ = std::fs::remove_file(&input_path);
     let _ = std::fs::remove_file(&output_path);
-    let unmap_path = format!("{}.unmap.bgr", output_prefix.display());
+    let unmap_path = format!("{}.unmap.wig", output_prefix.display());
     let _ = std::fs::remove_file(&unmap_path);
 }
 
 /// Test fixedStep Wiggle conversion
 #[test]
 fn test_wig_fixed_step_conversion() {
-    let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
     
     if !chain_path.exists() {
         eprintln!("Skipping test: chain file not found");
@@ -265,20 +278,44 @@ fixedStep chrom=chr1 start=100000 step=100 span=50
     
     // Verify stats
     assert_eq!(stats.total, 5, "Should process 5 data points");
+    assert_eq!(stats.success, 5, "All 5 points should map");
+    assert_eq!(stats.failed, 0, "No point should fail to map");
     
-    // Read output
-    let output_path = format!("{}.bgr", output_prefix.display());
+    // Read output (variableStep Wiggle, not bedGraph)
+    let output_path = format!("{}.wig", output_prefix.display());
     let output = std::fs::read_to_string(&output_path).unwrap();
     
-    eprintln!("\n=== fixedStep bedGraph Output ===");
+    eprintln!("\n=== fixedStep -> Wiggle Output ===");
     for line in output.lines() {
         eprintln!("{}", line);
     }
     
+    // A fixedStep input is re-emitted as a single variableStep block: one
+    // declaration followed by the five converted data points.
+    let mut declarations = 0;
+    let mut data_lines = 0;
+    for line in output.lines() {
+        if line.starts_with("variableStep ") {
+            declarations += 1;
+            assert!(line.contains("chrom="), "declaration should name a chromosome");
+            continue;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        assert_eq!(fields.len(), 2, "Wiggle data line should have 2 fields");
+        let _start: u64 = fields[0].parse().expect("start should be numeric");
+        let _value: f64 = fields[1].parse().expect("value should be numeric");
+        data_lines += 1;
+    }
+    assert_eq!(declarations, 1, "fixedStep input should map to one variableStep block");
+    assert_eq!(data_lines, 5, "All 5 converted points should be written");
+    
     // Cleanup
     let _ = std::fs::remove_file(&input_path);
     let _ = std::fs::remove_file(&output_path);
-    let unmap_path = format!("{}.unmap.bgr", output_prefix.display());
+    let unmap_path = format!("{}.unmap.wig", output_prefix.display());
     let _ = std::fs::remove_file(&unmap_path);
 }
 
@@ -287,7 +324,7 @@ fixedStep chrom=chr1 start=100000 step=100 span=50
 fn test_wig_vs_crossmap() {
     use std::process::Command;
     
-    let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
     
     if !chain_path.exists() {
         eprintln!("Skipping test: chain file not found");

@@ -9,7 +9,7 @@ use fast_crossmap::core::{ChainIndex, CoordinateMapper, ChromStyle, Strand};
 use std::path::PathBuf;
 
 /// Chain file path for benchmarks
-const CHAIN_FILE: &str = "ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz";
+const CHAIN_FILE: &str = "tests/data/GRCh37_to_GRCh38.chain.gz";
 
 /// Check if chain file exists
 fn chain_file_exists() -> bool {

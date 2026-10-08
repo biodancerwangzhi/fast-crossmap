@@ -104,7 +104,7 @@ proptest! {
 /// Test GVCF conversion with real chain file
 #[test]
 fn test_gvcf_conversion_basic() {
-    let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
     
     if !chain_path.exists() {
         eprintln!("Skipping test: chain file not found");
@@ -170,7 +170,7 @@ chr2\t50501\t.\tA\tG\t40\tPASS\tDP=80\tGT\t1/1
 fn test_gvcf_vs_crossmap() {
     use std::process::Command;
     
-    let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
     
     if !chain_path.exists() {
         eprintln!("Skipping test: chain file not found");

@@ -127,7 +127,7 @@ proptest! {
 /// Integration test: BED conversion with real chain file
 #[test]
 fn test_bed_conversion_with_crossmap() {
-    let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
     
     if !chain_path.exists() {
         eprintln!("Skipping test: chain file not found");
@@ -218,7 +218,7 @@ fn test_bed12_field_preservation() {
 /// **Validates: Requirements 4.7, 5.7**
 #[test]
 fn test_parallel_determinism() {
-    let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
     
     if !chain_path.exists() {
         eprintln!("Skipping test: chain file not found");
@@ -303,7 +303,7 @@ fn test_parallel_determinism() {
 /// Test that parallel processing produces correct results
 #[test]
 fn test_parallel_correctness() {
-    let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
     
     if !chain_path.exists() {
         eprintln!("Skipping test: chain file not found");
@@ -368,7 +368,7 @@ fn test_parallel_correctness() {
 fn test_bed_vs_crossmap() {
     use std::process::Command;
     
-    let chain_path = PathBuf::from("ref/CrossMap/chain_files/human/GRCh37_to_GRCh38.chain.gz");
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
     
     if !chain_path.exists() {
         eprintln!("Skipping test: chain file not found");
