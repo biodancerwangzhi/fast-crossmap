@@ -167,12 +167,12 @@ enum Commands {
         #[arg(long = "chromid", default_value = "a")]
         chrom_style: ChromStyleArg,
     },
-    /// Convert BAM/SAM/CRAM format file
+    /// Convert BAM/SAM format file
     #[cfg(feature = "bam")]
     Bam {
         /// Chain file for coordinate conversion
         chain: PathBuf,
-        /// Input BAM/SAM/CRAM file
+        /// Input BAM/SAM file
         input: PathBuf,
         /// Output BAM file
         output: PathBuf,

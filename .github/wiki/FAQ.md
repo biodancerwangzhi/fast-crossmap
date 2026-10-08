@@ -9,7 +9,7 @@ A: A high-performance genome coordinate liftover tool written in Rust.
 A: 10-20x faster, 64x less memory, multi-threading support, same output compatibility.
 
 **Q: Which formats are supported?**  
-A: BED, BAM/SAM/CRAM, VCF, GVCF, GFF/GTF, Wiggle, BigWig, MAF (8 formats total).
+A: BED, BAM/SAM, VCF, GVCF, GFF/GTF, Wiggle, BigWig, MAF (8 formats total).
 
 ---
 
@@ -19,7 +19,8 @@ A: BED, BAM/SAM/CRAM, VCF, GVCF, GFF/GTF, Wiggle, BigWig, MAF (8 formats total).
 A: No, if using pre-built binaries. Yes, if building from source.
 
 **Q: Does it work on Windows?**  
-A: Yes, but BAM/SAM/CRAM support is not available. Use Linux/macOS or WSL for BAM files.
+A: Yes. Pre-built binaries are provided for Windows x64 and include BAM/SAM —
+the BAM backend is pure Rust, so no C toolchain is needed.
 
 **Q: "Command not found" error?**  
 A: Add to PATH: `export PATH="/path/to/fast-crossmap:$PATH"` or use full path.

@@ -73,7 +73,7 @@ jobs:
           path: release/*.tar.gz
 
   # ===========================================================================
-  # Windows 构建 (不含 BAM 支持)
+  # Windows 构建
   # ===========================================================================
   build-windows:
     runs-on: windows-latest
@@ -84,8 +84,8 @@ jobs:
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
       
-      - name: 构建 (不含 BAM 支持)
-        run: cargo build --release --no-default-features --features cli
+      - name: 构建
+        run: cargo build --release
       
       - name: 打包
         shell: pwsh
@@ -101,9 +101,7 @@ jobs:
           $readmePath = "$name/README.txt"
           "FastCrossMap for Windows" | Out-File -FilePath $readmePath -Encoding utf8
           "========================`n" | Out-File -FilePath $readmePath -Encoding utf8 -Append
-          "Note: This Windows build does NOT include BAM/SAM/CRAM support." | Out-File -FilePath $readmePath -Encoding utf8 -Append
-          "Supported formats: BED, VCF, GVCF, GFF, GTF, Wiggle, bedGraph, BigWig, MAF`n" | Out-File -FilePath $readmePath -Encoding utf8 -Append
-          "For BAM support, please use the Linux or macOS version." | Out-File -FilePath $readmePath -Encoding utf8 -Append
+          "Supported formats: BED, BAM, SAM, VCF, GVCF, GFF, GTF, Wiggle, bedGraph, BigWig, MAF`n" | Out-File -FilePath $readmePath -Encoding utf8 -Append
 
           Compress-Archive -Path $name -DestinationPath "release/$name.zip"
       

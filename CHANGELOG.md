@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `-t/--threads` help text now states the actual default; it has always been 1
 - VCF/GVCF parallel path rewritten as an ordered pipeline (read / convert / write
   overlap, output order preserved)
+- Windows binaries now include BAM/SAM: the pure-Rust backend dropped the htslib
+  dependency that used to make them unbuildable there
+- Documentation no longer claims CRAM support; only BAM and SAM are implemented
 
 ### Fixed
 - `##contig` header order now follows the reference `.fai` index instead of being

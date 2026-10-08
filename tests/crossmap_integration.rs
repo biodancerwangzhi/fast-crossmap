@@ -86,21 +86,25 @@ proptest! {
         // Get CrossMap result
         let crossmap_result = run_crossmap_bed_single(chrom, start, end);
         
-        // Compare results
         match (&fast_result, &crossmap_result) {
+            // Compare results. A single input interval can straddle several
+            // chain blocks, in which case both tools emit one line per block;
+            // compare the whole list rather than just the first region.
             (Some(fast), Some(cross)) if !fast.is_empty() => {
-                let fast_seg = &fast[0];
-                let fast_output = format!("{}\t{}\t{}", 
-                    fast_seg.target.chrom, fast_seg.target.start, fast_seg.target.end);
+                let fast_lines: Vec<String> = fast
+                    .iter()
+                    .map(|seg| format!("{}\t{}\t{}", seg.target.chrom, seg.target.start, seg.target.end))
+                    .collect();
                 
-                // Parse CrossMap output
-                let cross_fields: Vec<&str> = cross.split('\t').take(3).collect();
-                if cross_fields.len() >= 3 {
-                    let cross_output = format!("{}\t{}\t{}", 
-                        cross_fields[0], cross_fields[1], cross_fields[2]);
-                    prop_assert_eq!(fast_output, cross_output,
-                        "Mismatch for {}:{}-{}", chrom, start, end);
-                }
+                let cross_lines: Vec<String> = cross
+                    .lines()
+                    .filter(|l| !l.starts_with('#') && !l.starts_with("track"))
+                    .filter(|l| l.split('\t').count() >= 3)
+                    .map(|l| l.split('\t').take(3).collect::<Vec<_>>().join("\t"))
+                    .collect();
+                
+                prop_assert_eq!(fast_lines, cross_lines,
+                    "Mismatch for {}:{}-{}", chrom, start, end);
             }
             _ => {
                 // Both unmapped or edge cases - OK

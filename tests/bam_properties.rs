@@ -1,4 +1,4 @@
-//! BAM/SAM/CRAM format property tests
+//! BAM/SAM format property tests
 //!
 //! Tests for BAM format adapter including CIGAR operations and coordinate mapping.
 

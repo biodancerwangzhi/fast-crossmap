@@ -4,7 +4,6 @@
 
 - **OS**: Linux, macOS, or Windows
 - **Memory**: 512 MB minimum (2 GB+ recommended for VCF/GVCF/MAF with reference genome)
-- **Note**: Windows builds do not support BAM/SAM/CRAM format
 
 ---
 

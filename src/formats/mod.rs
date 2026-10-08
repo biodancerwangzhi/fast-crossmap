@@ -1,6 +1,6 @@
 //! File format adapters
 //!
-//! Adapters for different genomic file formats (BED, VCF, GVCF, GFF/GTF, MAF, Wiggle/BigWig, BAM/SAM/CRAM, Region).
+//! Adapters for different genomic file formats (BED, VCF, GVCF, GFF/GTF, MAF, Wiggle/BigWig, BAM/SAM, Region).
 
 #[cfg(feature = "bam")]
 pub mod bam;

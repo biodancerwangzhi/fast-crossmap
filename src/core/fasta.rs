@@ -1,7 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::fs::FileExt;
+#[cfg(windows)]
+use std::os::windows::fs::FileExt;
 use std::path::Path;
 
 struct FaiEntry {
@@ -14,6 +17,21 @@ struct FaiEntry {
 enum Backend {
     Pread(File),
     Mmap(memmap2::Mmap),
+}
+
+/// Positioned read that does not disturb the file cursor.
+///
+/// `read_at` is `pread(2)`, which only exists on Unix; Windows spells the same
+/// operation `seek_read`. Both leave the offset unchanged, so the two backends
+/// behave identically.
+#[cfg(unix)]
+fn pread(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    file.read_at(buf, offset)
+}
+
+#[cfg(windows)]
+fn pread(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    file.seek_read(buf, offset)
 }
 
 pub struct FastaReader {
@@ -190,7 +208,7 @@ impl FastaReader {
         match &self.backend {
             Backend::Pread(file) => {
                 let mut buf = vec![0u8; raw_len];
-                if file.read_at(&mut buf, first_byte).ok()? < raw_len {
+                if pread(file, &mut buf, first_byte).ok()? < raw_len {
                     return None;
                 }
                 Self::extract_seq(&buf, seq_len)

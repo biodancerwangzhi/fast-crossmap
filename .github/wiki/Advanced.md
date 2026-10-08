@@ -45,7 +45,7 @@ fast-crossmap bed -t 4 hg19ToHg38.chain.gz input.bed.gz output.bed.gz
 
 ---
 
-### BAM/SAM/CRAM Format
+### BAM/SAM Format
 
 ```bash
 fast-crossmap bam [OPTIONS] <CHAIN> <INPUT> <OUTPUT>
@@ -240,7 +240,7 @@ FastCrossMap uses **64x less memory** than CrossMap.
 | Feature | FastCrossMap | CrossMap | liftOver | FastRemap |
 |---------|:------------:|:--------:|:--------:|:---------:|
 | BED | ✅ | ✅ | ✅ | ✅ |
-| BAM/SAM/CRAM | ✅ | ✅ | ❌ | ✅ |
+| BAM/SAM | ✅ | ✅ | ❌ | ✅ |
 | VCF/GVCF | ✅ | ✅ | ❌ | ❌ |
 | GFF/GTF | ✅ | ✅ | ✅ | ❌ |
 | Wiggle/BigWig | ✅ | ✅ | ❌ | ❌ |

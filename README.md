@@ -12,11 +12,9 @@
 - 🧵 **Multi-threading support** with near-linear scalability
 - 💾 **64x less memory** usage (16MB vs 1GB for BAM processing)
 - ✅ **100% compatible** with CrossMap output (strict mode)
-- 📦 **8 file formats** supported: BED, BAM/SAM/CRAM, VCF, GVCF, GFF/GTF, Wiggle, BigWig, MAF
+- 📦 **8 file formats** supported: BED, BAM/SAM, VCF, GVCF, GFF/GTF, Wiggle, BigWig, MAF
 - 🗜️ **Compressed file support**: .gz, .bz2 for both chain files and input files
-- 🖥️ **Cross-platform**: Linux, macOS, Windows*
-
-> **Note**: Windows builds do not include BAM/SAM/CRAM support due to htslib dependencies. For BAM processing, use Linux or macOS.
+- 🖥️ **Cross-platform**: Linux, macOS, Windows
 
 ## Performance
 
@@ -57,7 +55,7 @@ wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/
 # macOS (Intel)
 wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-macos-x86_64.tar.gz
 
-# Windows (x64) - Note: No BAM support
+# Windows (x64)
 # Download fcm-0.5.0-windows-x64.zip from Releases
 ```
 
@@ -68,7 +66,7 @@ wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/
 cargo build --release
 ./target/release/fast-crossmap --help
 
-# Build without BAM support (for Windows or minimal dependencies)
+# Build without BAM support (minimal dependencies)
 cargo build --release --no-default-features
 ```
 
@@ -161,7 +159,7 @@ fast-crossmap bed hg19ToHg38.chain.gz input.bed.gz output.bed
 | Format | Description | Reference Genome | Multi-threading |
 |--------|-------------|:----------------:|:---------------:|
 | BED | BED3/BED6/BED12 | - | ✅ |
-| BAM/SAM/CRAM | Alignment files | - | ✅ |
+| BAM/SAM | Alignment files | - | ✅ |
 | VCF | Variant Call Format | Required | ✅ |
 | GVCF | Genomic VCF | Required | ✅ |
 | GFF/GTF | Gene annotations | - | ✅ |

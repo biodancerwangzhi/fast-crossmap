@@ -8,7 +8,7 @@ Welcome to **FastCrossMap** - a high-performance genome coordinate liftover tool
 - **Multi-threading support** with near-linear scalability
 - **64x less memory** usage (16MB vs 1GB for BAM processing)
 - **100% compatible** with CrossMap output (strict mode)
-- **8 file formats**: BED, BAM/SAM/CRAM, VCF, GVCF, GFF/GTF, Wiggle, BigWig, MAF
+- **8 file formats**: BED, BAM/SAM, VCF, GVCF, GFF/GTF, Wiggle, BigWig, MAF
 - **Compressed file support**: .gz, .bz2 for both chain files and input files
 - **Cross-platform**: Linux, macOS, Windows
 

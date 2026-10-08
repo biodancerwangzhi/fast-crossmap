@@ -17,7 +17,7 @@ exclude = ["paper/"]
 default = ["bam", "cli"]
 # CLI 工具依赖（clap + env_logger）
 cli = ["dep:clap", "dep:env_logger"]
-# BAM/SAM/CRAM 支持 (纯 Rust，通过 noodles 实现)
+# BAM/SAM 支持 (纯 Rust，通过 noodles 实现)
 bam = ["dep:noodles-bam", "dep:noodles-sam", "dep:noodles-bgzf", "dep:noodles-core"]
 # 完整功能 (所有格式)
 full = ["bam", "cli"]
