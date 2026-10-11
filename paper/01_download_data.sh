@@ -425,7 +425,7 @@ else
     fi
 fi
 
-# hg19 (required for re-alignment benchmark: wgsim + bwa-mem2)
+# hg19 (required for re-alignment benchmark: wgsim + bwa mem)
 HG19_FA="${DATA_DIR}/hg19.fa"
 HG19_GZ="${DATA_DIR}/hg19.fa.gz"
 

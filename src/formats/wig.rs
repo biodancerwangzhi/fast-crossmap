@@ -7,8 +7,8 @@
 
 use crate::core::{CoordinateMapper, Strand};
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::Path;
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, Write};
+use std::path::{Path, PathBuf};
 
 /// Wiggle parsing error
 #[derive(Debug, Clone)]
@@ -383,7 +383,123 @@ fn convert_wig_point(
     })
 }
 
+/// Maximum size in bytes of one spooled record: `(start, end, value)`.
+const SPOOL_RECORD_SIZE: u64 = 24;
+
+/// A disk-backed spool of `(start, end, value)` triples, grouped by chromosome.
+///
+/// Wiggle liftover cannot write output as it reads. Both our output and
+/// CrossMap's are grouped by chromosome in lexicographic order, while the input
+/// may name chromosomes in any order and may revisit one more than once. Nor can
+/// the merge run on a partial chromosome: splitting one chromosome across two
+/// passes would emit two `variableStep` blocks where the output calls for one.
+///
+/// So each record is appended to a scratch file in a fixed-width binary form,
+/// with a small in-memory index mapping chromosome name to the byte ranges it
+/// occupies. Once the input is exhausted, chromosomes are replayed one at a
+/// time: read back, merged, written out, dropped.
+struct PointSpool {
+    path: PathBuf,
+    // `Option` so `Drop` can close the handle before unlinking (required on Windows).
+    writer: Option<BufWriter<std::fs::File>>,
+    offset: u64,
+    // chrom -> [(byte offset, record count), ...]. More than one entry when the
+    // input revisits a chromosome after emitting data for a different one.
+    index: BTreeMap<String, Vec<(u64, u64)>>,
+    count: usize,
+}
+
+impl PointSpool {
+    fn create(path: &str) -> std::io::Result<Self> {
+        let file = std::fs::File::create(path)?;
+        Ok(Self {
+            path: PathBuf::from(path),
+            writer: Some(BufWriter::with_capacity(128 * 1024, file)),
+            offset: 0,
+            index: BTreeMap::new(),
+            count: 0,
+        })
+    }
+
+    fn push(&mut self, chrom: &str, start: u64, end: u64, value: f64) -> std::io::Result<()> {
+        let mut buf = [0u8; SPOOL_RECORD_SIZE as usize];
+        buf[0..8].copy_from_slice(&start.to_le_bytes());
+        buf[8..16].copy_from_slice(&end.to_le_bytes());
+        buf[16..24].copy_from_slice(&value.to_le_bytes());
+        if let Some(writer) = self.writer.as_mut() {
+            writer.write_all(&buf)?;
+        }
+
+        match self.index.get_mut(chrom) {
+            Some(segments) => match segments.last_mut() {
+                // Contiguous with this chromosome's previous run: extend it.
+                Some(last) if last.0 + last.1 * SPOOL_RECORD_SIZE == self.offset => last.1 += 1,
+                _ => segments.push((self.offset, 1)),
+            },
+            None => {
+                self.index.insert(chrom.to_string(), vec![(self.offset, 1)]);
+            }
+        }
+
+        self.offset += SPOOL_RECORD_SIZE;
+        self.count += 1;
+        Ok(())
+    }
+
+    fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Chromosome names in lexicographic order — the order both tools write.
+    fn chroms(&self) -> impl Iterator<Item = &str> {
+        self.index.keys().map(|s| s.as_str())
+    }
+
+    /// Read back every record spooled for one chromosome, in input order.
+    fn read_chrom(&mut self, chrom: &str) -> std::io::Result<Vec<BedGraphRecord>> {
+        let segments = match self.index.get(chrom) {
+            Some(segments) => segments.clone(),
+            None => return Ok(Vec::new()),
+        };
+        if let Some(writer) = self.writer.as_mut() {
+            writer.flush()?;
+        }
+
+        let total: u64 = segments.iter().map(|(_, count)| count).sum();
+        let mut records = Vec::with_capacity(total as usize);
+        // Decode straight from a buffered reader: reading the whole run into a
+        // scratch buffer first would double this function's footprint.
+        let mut file = BufReader::with_capacity(128 * 1024, std::fs::File::open(&self.path)?);
+        let mut buf = [0u8; SPOOL_RECORD_SIZE as usize];
+        for (offset, count) in segments {
+            file.seek(std::io::SeekFrom::Start(offset))?;
+            for _ in 0..count {
+                file.read_exact(&mut buf)?;
+                records.push(BedGraphRecord {
+                    chrom: chrom.to_string(),
+                    start: u64::from_le_bytes(buf[0..8].try_into().unwrap()),
+                    end: u64::from_le_bytes(buf[8..16].try_into().unwrap()),
+                    value: f64::from_le_bytes(buf[16..24].try_into().unwrap()),
+                });
+            }
+        }
+        Ok(records)
+    }
+}
+
+impl Drop for PointSpool {
+    fn drop(&mut self) {
+        // Close the write handle first: Windows refuses to unlink an open file.
+        self.writer.take();
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// Convert a Wiggle file to Wiggle format (variableStep)
+///
+/// Records are spooled to a scratch file as they are read, then replayed one
+/// chromosome at a time, so peak memory tracks the largest single chromosome
+/// rather than the whole input (Requirement: bounded memory).
 ///
 /// # Arguments
 /// * `input` - Input Wiggle file path
@@ -399,33 +515,35 @@ pub fn convert_wig<P: AsRef<Path>>(
 ) -> Result<ConversionStats, std::io::Error> {
     let input_file = std::fs::File::open(input.as_ref())?;
     let reader = BufReader::with_capacity(128 * 1024, input_file);
-    
+
     // Output files - use .wig extension for Wiggle format
     let output_path = format!("{}.wig", output_prefix.as_ref().display());
     let unmap_path = format!("{}.unmap.wig", output_prefix.as_ref().display());
-    
+
+    // Scratch files sit beside the output so they stay on one filesystem.
+    let mapped_spool_path = format!("{}.tmp.mapped", output_prefix.as_ref().display());
+    let unmapped_spool_path = format!("{}.tmp.unmapped", output_prefix.as_ref().display());
+
     let mut stats = ConversionStats::default();
-    let mut converted_records = Vec::new();
-    let mut unmapped_records = Vec::new();
-    
-    // Parse and convert
+    let mut mapped_count = 0usize;
+
+    let mut spool = PointSpool::create(&mapped_spool_path)?;
+    let mut unmap_spool = PointSpool::create(&unmapped_spool_path)?;
+
+    // Phase 1: parse and map, spooling each record under its output chromosome.
     let wig_reader = WigReader::new(reader);
-    
+
     for result in wig_reader {
         match result {
             Ok(point) => {
                 stats.total += 1;
-                
+
                 if let Some(converted) = convert_wig_point(&point, mapper) {
-                    converted_records.push(converted);
+                    spool.push(&converted.chrom, converted.start, converted.end, converted.value)?;
+                    mapped_count += 1;
                     stats.success += 1;
                 } else {
-                    unmapped_records.push(BedGraphRecord {
-                        chrom: point.chrom,
-                        start: point.start,
-                        end: point.end,
-                        value: point.value,
-                    });
+                    unmap_spool.push(&point.chrom, point.start, point.end, point.value)?;
                     stats.failed += 1;
                 }
             }
@@ -435,20 +553,34 @@ pub fn convert_wig<P: AsRef<Path>>(
             }
         }
     }
-    
-    // Merge overlapping records
-    let original_count = converted_records.len();
-    let merged_records = merge_bedgraph_records(converted_records);
-    stats.merged = original_count.abs_diff(merged_records.len());
 
-    // Write output in Wiggle variableStep format
-    write_wiggle_file(&output_path, &merged_records)?;
-    
-    // Write unmapped in Wiggle format
-    if !unmapped_records.is_empty() {
-        write_wiggle_file(&unmap_path, &unmapped_records)?;
+    // Phase 2: replay one chromosome at a time — merge, write, release.
+    let mut merged_total = 0usize;
+    {
+        let mut output_file =
+            BufWriter::with_capacity(128 * 1024, std::fs::File::create(&output_path)?);
+        let chroms: Vec<String> = spool.chroms().map(|s| s.to_string()).collect();
+        for chrom in chroms {
+            let records = spool.read_chrom(&chrom)?;
+            let merged = merge_bedgraph_records(records);
+            merged_total += merged.len();
+            write_wiggle_block(&mut output_file, &chrom, &merged)?;
+        }
     }
-    
+    stats.merged = mapped_count.abs_diff(merged_total);
+
+    // Unmapped points keep their source chromosome and, within a chromosome,
+    // their input order.
+    if !unmap_spool.is_empty() {
+        let mut unmap_file =
+            BufWriter::with_capacity(128 * 1024, std::fs::File::create(&unmap_path)?);
+        let chroms: Vec<String> = unmap_spool.chroms().map(|s| s.to_string()).collect();
+        for chrom in chroms {
+            let records = unmap_spool.read_chrom(&chrom)?;
+            write_wiggle_block(&mut unmap_file, &chrom, &records)?;
+        }
+    }
+
     Ok(stats)
 }
 
@@ -466,36 +598,29 @@ fn format_value(value: f64) -> String {
     s
 }
 
-/// Write records to a Wiggle file in variableStep format
-fn write_wiggle_file(path: &str, records: &[BedGraphRecord]) -> Result<(), std::io::Error> {
-    let mut output_file = BufWriter::with_capacity(128 * 1024, std::fs::File::create(path)?);
+/// Write one chromosome's records as a single `variableStep` block.
+fn write_wiggle_block<W: Write>(
+    output: &mut W,
+    chrom: &str,
+    records: &[BedGraphRecord],
+) -> Result<(), std::io::Error> {
+    // Determine span (use the most common span, default to 1)
+    let span = if !records.is_empty() {
+        records[0].end - records[0].start
+    } else {
+        1
+    };
 
-    // Group records by chromosome
-    let mut by_chrom: BTreeMap<String, Vec<&BedGraphRecord>> = BTreeMap::new();
-    for rec in records {
-        by_chrom.entry(rec.chrom.clone()).or_default().push(rec);
+    // Write variableStep declaration
+    if span > 1 {
+        writeln!(output, "variableStep chrom={} span={}", chrom, span)?;
+    } else {
+        writeln!(output, "variableStep chrom={}", chrom)?;
     }
 
-    // Write each chromosome's data
-    for (chrom, recs) in by_chrom {
-        // Determine span (use the most common span, default to 1)
-        let span = if !recs.is_empty() {
-            recs[0].end - recs[0].start
-        } else {
-            1
-        };
-
-        // Write variableStep declaration
-        if span > 1 {
-            writeln!(output_file, "variableStep chrom={} span={}", chrom, span)?;
-        } else {
-            writeln!(output_file, "variableStep chrom={}", chrom)?;
-        }
-
-        // Write data points (convert 0-based to 1-based)
-        for rec in recs {
-            writeln!(output_file, "{}\t{}", rec.start + 1, format_value(rec.value))?;
-        }
+    // Write data points (convert 0-based to 1-based)
+    for rec in records {
+        writeln!(output, "{}\t{}", rec.start + 1, format_value(rec.value))?;
     }
 
     Ok(())
@@ -507,114 +632,161 @@ pub mod bigwig {
     use bigtools::BigWigRead;
     use std::collections::HashMap;
     
-    /// Read intervals from a BigWig file
-    pub fn read_bigwig_intervals<P: AsRef<Path>>(
-        path: P,
-    ) -> Result<Vec<WigDataPoint>, WigParseError> {
+    /// Visit every interval in a BigWig file, chromosome by chromosome.
+    ///
+    /// Chromosomes are visited in the file's own order and intervals within a
+    /// chromosome in coordinate order. The callback runs per interval, so callers
+    /// can stream straight to disk instead of collecting the whole file — that
+    /// `Vec<WigDataPoint>` was the single largest allocation on the BigWig path.
+    pub fn for_each_bigwig_interval<P, F>(path: P, mut visit: F) -> Result<(), WigParseError>
+    where
+        P: AsRef<Path>,
+        F: FnMut(&str, u64, u64, f64) -> Result<(), WigParseError>,
+    {
         let mut reader = BigWigRead::open_file(path.as_ref().to_str().unwrap())
             .map_err(|e| WigParseError::IoError(e.to_string()))?;
-        
+
         let chroms = reader.chroms().to_vec();
-        let mut points = Vec::new();
-        
+
         for chrom_info in chroms {
             let chrom_name = chrom_info.name.clone();
             let chrom_len = chrom_info.length;
-            
+
             // Read all intervals for this chromosome
             let intervals = reader
                 .get_interval(&chrom_name, 0, chrom_len)
                 .map_err(|e| WigParseError::IoError(e.to_string()))?;
-            
+
             for interval in intervals {
                 let interval = interval.map_err(|e| WigParseError::IoError(e.to_string()))?;
-                points.push(WigDataPoint {
-                    chrom: chrom_name.clone(),
-                    start: interval.start as u64,
-                    end: interval.end as u64,
-                    value: interval.value as f64,
-                });
+                visit(
+                    &chrom_name,
+                    interval.start as u64,
+                    interval.end as u64,
+                    interval.value as f64,
+                )?;
             }
         }
-        
+
+        Ok(())
+    }
+
+    /// Read intervals from a BigWig file
+    pub fn read_bigwig_intervals<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<Vec<WigDataPoint>, WigParseError> {
+        let mut points = Vec::new();
+        for_each_bigwig_interval(path, |chrom, start, end, value| {
+            points.push(WigDataPoint {
+                chrom: chrom.to_string(),
+                start,
+                end,
+                value,
+            });
+            Ok(())
+        })?;
         Ok(points)
     }
     
 
     /// Write bedGraph records directly to a BigWig file using bigtools
+    ///
+    /// Records are spooled to a scratch file first so the streaming writer below
+    /// can be reused without holding them all in memory.
     pub fn write_bigwig_direct<P: AsRef<Path>>(
         records: &[BedGraphRecord],
         output_path: P,
         chrom_sizes: &HashMap<String, u64>,
     ) -> Result<(), WigParseError> {
+        let spool_path = format!("{}.records.tmp", output_path.as_ref().display());
+        let mut spool = PointSpool::create(&spool_path)
+            .map_err(|e| WigParseError::IoError(e.to_string()))?;
+        for rec in records {
+            spool
+                .push(&rec.chrom, rec.start, rec.end, rec.value)
+                .map_err(|e| WigParseError::IoError(e.to_string()))?;
+        }
+
+        let mut merged_total = 0usize;
+        write_bigwig_from_spool(&mut spool, output_path.as_ref(), chrom_sizes, &mut merged_total)
+    }
+
+    /// Merge and write a spooled set of records out as a BigWig.
+    ///
+    /// Target sequences are visited in lexicographic order. Every sequence named
+    /// in `chrom_sizes` gets an entry, with a placeholder `chrom\t0\t0\t0` line
+    /// for those carrying no data — the same shape CrossMap writes. The number of
+    /// merged records actually written is returned via `merged_total`.
+    fn write_bigwig_from_spool(
+        spool: &mut PointSpool,
+        output_path: &Path,
+        chrom_sizes: &HashMap<String, u64>,
+        merged_total: &mut usize,
+    ) -> Result<(), WigParseError> {
         use bigtools::BigWigWrite;
         use bigtools::beddata::BedParserStreamingIterator;
-        
+
         // Create chrom sizes map for bigtools (u32)
         let chrom_map: HashMap<String, u32> = chrom_sizes
             .iter()
             .map(|(k, v)| (k.clone(), *v as u32))
             .collect();
-        
-        // Sort records by chromosome and position
-        let mut sorted_records: Vec<_> = records.iter().collect();
-        sorted_records.sort_by(|a, b| {
-            a.chrom.cmp(&b.chrom).then(a.start.cmp(&b.start))
-        });
 
-        let mut by_chrom: BTreeMap<&str, Vec<&BedGraphRecord>> = BTreeMap::new();
-        for rec in &sorted_records {
-            by_chrom.entry(rec.chrom.as_str()).or_default().push(rec);
-        }
         let mut targets: Vec<&str> = chrom_sizes.keys().map(|k| k.as_str()).collect();
         targets.sort_unstable();
 
-        // Write to a temporary bedGraph file first
-        let temp_bgr_path = format!("{}.temp.bedGraph", output_path.as_ref().display());
+        // Write to a temporary bedGraph file first, one chromosome at a time.
+        let temp_bgr_path = format!("{}.temp.bedGraph", output_path.display());
         {
             let mut file = BufWriter::with_capacity(128 * 1024, std::fs::File::create(&temp_bgr_path)
                 .map_err(|e| WigParseError::IoError(e.to_string()))?);
             for chrom in targets {
-                match by_chrom.get(chrom) {
-                    Some(recs) => {
-                        for rec in recs {
-                            writeln!(file, "{}\t{}\t{}\t{}", rec.chrom, rec.start, rec.end, rec.value)
-                                .map_err(|e| WigParseError::IoError(e.to_string()))?;
-                        }
-                    }
-                    None => {
-                        writeln!(file, "{}\t0\t0\t0", chrom)
-                            .map_err(|e| WigParseError::IoError(e.to_string()))?;
-                    }
+                let records = spool
+                    .read_chrom(chrom)
+                    .map_err(|e| WigParseError::IoError(e.to_string()))?;
+                if records.is_empty() {
+                    writeln!(file, "{}\t0\t0\t0", chrom)
+                        .map_err(|e| WigParseError::IoError(e.to_string()))?;
+                    continue;
+                }
+                let merged = merge_bedgraph_records(records);
+                *merged_total += merged.len();
+                for rec in &merged {
+                    writeln!(file, "{}\t{}\t{}\t{}", rec.chrom, rec.start, rec.end, rec.value)
+                        .map_err(|e| WigParseError::IoError(e.to_string()))?;
                 }
             }
         }
-        
+
         // Use bigtools to convert bedGraph to BigWig
         let bedgraph_file = std::fs::File::open(&temp_bgr_path)
             .map_err(|e| WigParseError::IoError(e.to_string()))?;
         let vals = BedParserStreamingIterator::from_bedgraph_file(bedgraph_file, false);
-        
+
         // Create tokio runtime for bigtools
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .build()
             .map_err(|e| WigParseError::IoError(e.to_string()))?;
-        
+
         // Create BigWig writer and write
-        let writer = BigWigWrite::create_file(output_path.as_ref(), chrom_map)
+        let writer = BigWigWrite::create_file(output_path, chrom_map)
             .map_err(|e| WigParseError::IoError(e.to_string()))?;
-        
+
         writer.write(vals, runtime)
             .map_err(|e| WigParseError::IoError(format!("{:?}", e)))?;
 
         // Clean up temp file
         let _ = std::fs::remove_file(&temp_bgr_path);
-        
+
         Ok(())
     }
     
     /// Convert a BigWig file to BigWig format
+    ///
+    /// Intervals are spooled as they are read and merged one chromosome at a
+    /// time, so peak memory tracks the largest single chromosome rather than the
+    /// whole input.
     ///
     /// # Arguments
     /// * `input` - Input BigWig file path
@@ -628,54 +800,63 @@ pub mod bigwig {
         output_prefix: P,
         mapper: &CoordinateMapper,
     ) -> Result<ConversionStats, std::io::Error> {
-        // Read BigWig intervals
-        let points = read_bigwig_intervals(&input)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-        
+        let unmap_path = format!("{}.unmap.bedGraph", output_prefix.as_ref().display());
+        let spool_path = format!("{}.tmp.mapped", output_prefix.as_ref().display());
+
         let mut stats = ConversionStats::default();
-        let mut converted_records = Vec::new();
-        let mut unmapped_records = Vec::new();
-        
-        // Convert each interval
-        for point in points {
+        let mut mapped_count = 0usize;
+        let mut spool = PointSpool::create(&spool_path)?;
+
+        // Unmapped intervals are written straight through in input order, so this
+        // stream costs nothing extra. (The Wiggle path instead groups `.unmap.wig`
+        // by chromosome and therefore spools it — different output, different order.)
+        let mut unmap_file: Option<BufWriter<std::fs::File>> = None;
+
+        for_each_bigwig_interval(&input, |chrom, start, end, value| {
+            let point = WigDataPoint {
+                chrom: chrom.to_string(),
+                start,
+                end,
+                value,
+            };
             stats.total += 1;
-            
+
             if let Some(converted) = convert_wig_point(&point, mapper) {
-                converted_records.push(converted);
+                spool
+                    .push(&converted.chrom, converted.start, converted.end, converted.value)
+                    .map_err(|e| WigParseError::IoError(e.to_string()))?;
+                mapped_count += 1;
                 stats.success += 1;
             } else {
-                unmapped_records.push(BedGraphRecord {
-                    chrom: point.chrom,
-                    start: point.start,
-                    end: point.end,
-                    value: point.value,
-                });
+                if unmap_file.is_none() {
+                    let file = std::fs::File::create(&unmap_path)
+                        .map_err(|e| WigParseError::IoError(e.to_string()))?;
+                    unmap_file = Some(BufWriter::with_capacity(64 * 1024, file));
+                }
+                if let Some(writer) = unmap_file.as_mut() {
+                    writeln!(writer, "{}\t{}\t{}\t{}", point.chrom, point.start, point.end, point.value)
+                        .map_err(|e| WigParseError::IoError(e.to_string()))?;
+                }
                 stats.failed += 1;
             }
+            Ok(())
+        })
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+
+        if let Some(mut writer) = unmap_file {
+            writer.flush()?;
         }
-        
-        // Merge overlapping records
-        let original_count = converted_records.len();
-        let merged_records = merge_bedgraph_records(converted_records);
-        stats.merged = original_count.abs_diff(merged_records.len());
-        
-        // Write BigWig output directly
+
+        // Merge and write per chromosome, then hand off to bigtools.
         let bw_path = format!("{}.bw", output_prefix.as_ref().display());
-        if !merged_records.is_empty() {
+        let mut merged_total = 0usize;
+        if !spool.is_empty() {
             let target_sizes = mapper.target_sizes();
-            write_bigwig_direct(&merged_records, &bw_path, target_sizes)
+            write_bigwig_from_spool(&mut spool, Path::new(&bw_path), target_sizes, &mut merged_total)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         }
-        
-        // Write unmapped in bedGraph format (BigWig can't store unmapped)
-        let unmap_path = format!("{}.unmap.bedGraph", output_prefix.as_ref().display());
-        if !unmapped_records.is_empty() {
-            let mut unmap_file = BufWriter::with_capacity(64 * 1024, std::fs::File::create(&unmap_path)?);
-            for rec in &unmapped_records {
-                writeln!(unmap_file, "{}", rec.to_line())?;
-            }
-        }
-        
+        stats.merged = mapped_count.abs_diff(merged_total);
+
         Ok(stats)
     }
 }

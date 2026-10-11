@@ -440,7 +440,7 @@ def benchmark_dataset(sam_file: Path, dataset_name: str, output_dir: Path) -> tu
     out = ds_dir / "fastcrossmap_output.sam"
     cmd = ["./target/release/fast-crossmap", "bam",
            str(CHAIN_FILE), str(sam_file), str(out)]
-    r = run_tool_benchmark("FastCrossMap (1t)", cmd, sam_stats, dataset_name, outputs=[out], warm_file=sam_file)
+    r = run_tool_benchmark("FastCrossMap", cmd, sam_stats, dataset_name, outputs=[out], warm_file=sam_file)
     r.input_file = str(sam_file)
     results.append(r)
 
@@ -472,14 +472,14 @@ def benchmark_dataset(sam_file: Path, dataset_name: str, output_dir: Path) -> tu
     r.input_file = str(sam_file)
     results.append(r)
 
-    # 5. FastRemap (~33 threads by default, no thread control option)
+    # 5. FastRemap (~27 threads by default, no thread control option)
     print(f"  [5/5] FastRemap (multi-thread, default) on {dataset_name}")
     out = ds_dir / "fastremap_output.sam"
     unmap = ds_dir / "fastremap_output.sam.unmap"
     chain_plain = ensure_chain_unzipped()
     cmd = ["FastRemap", "-f", "sam", "-c", str(chain_plain),
            "-i", str(sam_file), "-o", str(out), "-u", str(unmap)]
-    r = run_tool_benchmark("FastRemap (multi-thread)", cmd, sam_stats, dataset_name,
+    r = run_tool_benchmark("FastRemap", cmd, sam_stats, dataset_name,
                            outputs=[Path(str(out) + ".sam")], warm_file=sam_file)
     r.input_file = str(sam_file)
     results.append(r)

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-11
+
+### Added
+- BAM/SAM: paired-end liftover. Mate coordinates (`RNEXT` / `PNEXT` / `TLEN`)
+  are rewritten against the destination, the paired FLAG bits are rebuilt, and
+  the nine paired-end categories CrossMap reports are tallied and printed, so
+  the counts can be reconciled against CrossMap's own run for the same input
+
+### Changed
+- Chain chromosome names are interned into a shared `Arc<str>` instead of one
+  `String` per block: a block carries two pointers rather than two allocations,
+  and a third copy that used to be cloned into the index is gone. Cost drops
+  from **241 to 145 bytes per chain block** (flat across 54k-432k blocks); a BED
+  run's peak RSS falls from 16.7 MB to 11.7 MB
+- Wiggle / BigWig: records are now spooled to a scratch file and merged one
+  chromosome at a time, so peak memory tracks the largest single chromosome
+  instead of the whole input, which is what put these two formats above CrossMap
+  on memory. Output is byte-for-byte unchanged
+
+### Fixed
+- BAM/SAM: `@HD` is now written as `VN:1.0 SO:coordinate`, as CrossMap does,
+  instead of noodles' default `VN:1.6` with no sort order
+
 ## [0.5.0] - 2026-10-08
 
 ### Added
@@ -23,8 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation no longer claims CRAM support; only BAM and SAM are implemented
 
 ### Fixed
-- `##contig` header order now follows the reference `.fai` index instead of being
-  dependent on hash iteration order, so output is byte-stable across runs
+- `##contig` lines are now emitted in sorted contig-name order, as CrossMap does,
+  instead of in hash iteration order, so output is byte-stable across runs
 - Windows release build produced no executable: the `cli` feature became required by
   the binary, and the Windows job disabled it along with the default features
 
@@ -81,7 +104,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 64x less memory usage for BAM processing
 - Near-linear multi-threading scalability
 
-[Unreleased]: https://github.com/biodancerwangzhi/fast-crossmap/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/biodancerwangzhi/fast-crossmap/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/biodancerwangzhi/fast-crossmap/releases/tag/v0.6.0
 [0.5.0]: https://github.com/biodancerwangzhi/fast-crossmap/releases/tag/v0.5.0
 [0.4.0]: https://github.com/biodancerwangzhi/fast-crossmap/releases/tag/v0.4.0
 [0.3.0]: https://github.com/biodancerwangzhi/fast-crossmap/releases/tag/v0.3.0

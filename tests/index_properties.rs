@@ -7,6 +7,7 @@ use fast_crossmap::core::{ChainIndex, ChainFile, ChainBlock};
 use fast_crossmap::Strand;
 use proptest::prelude::*;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Generate a random chromosome name
 fn arb_chrom() -> impl Strategy<Value = String> {
@@ -61,10 +62,10 @@ fn create_chain_file(intervals_by_chrom: HashMap<String, Vec<(u64, u64)>>) -> Ch
         
         for &(start, end) in intervals {
             blocks.push(ChainBlock {
-                source_chrom: chrom.clone(),
+                source_chrom: Arc::from(chrom.as_str()),
                 source_start: start,
                 source_end: end,
-                target_chrom: chrom.clone(),
+                target_chrom: Arc::from(chrom.as_str()),
                 target_start: start,
                 target_end: end,
                 target_strand: Strand::Plus,

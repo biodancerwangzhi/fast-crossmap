@@ -10,7 +10,7 @@
 
 - 🚀 **10-20x faster** than CrossMap (single-threaded)
 - 🧵 **Multi-threading support** with near-linear scalability
-- 💾 **64x less memory** usage (16MB vs 1GB for BAM processing)
+- 💾 **~70x less memory** usage (14.5MB vs 1,022MB for BAM processing)
 - ✅ **100% compatible** with CrossMap output (strict mode)
 - 📦 **8 file formats** supported: BED, BAM/SAM, VCF, GVCF, GFF/GTF, Wiggle, BigWig, MAF
 - 🗜️ **Compressed file support**: .gz, .bz2 for both chain files and input files
@@ -20,12 +20,12 @@
 
 | Format | FastCrossMap (1T) | CrossMap | Speedup |
 |--------|-------------------|----------|---------|
-| BED (297K records) | 0.28s | 2.85s | **10x** |
-| BAM (1.3GB) | 86s | 679s | **8x** |
+| BED (297K records) | 0.27s | 3.05s | **11x** |
+| BAM (1.3GB) | 76.7s | 818s | **10.7x** |
 
 | Tool | Peak Memory (BAM) |
 |------|-------------------|
-| FastCrossMap | 16 MB |
+| FastCrossMap | 14.5 MB |
 | CrossMap | 1,022 MB |
 
 ## Installation
@@ -36,9 +36,9 @@ Download from [Releases](https://github.com/biodancerwangzhi/fast-crossmap/relea
 
 ```bash
 # Linux (x86_64, glibc >= 2.34)
-wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-linux-x86_64.tar.gz
-tar -xzf fcm-0.5.0-linux-x86_64.tar.gz
-cd fcm-0.5.0-linux-x86_64
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.6.0-linux-x86_64.tar.gz
+tar -xzf fcm-0.6.0-linux-x86_64.tar.gz
+cd fcm-0.6.0-linux-x86_64
 chmod +x fast-crossmap
 ./fast-crossmap --help
 
@@ -47,16 +47,16 @@ sudo mv fast-crossmap /usr/local/bin/
 # Or: export PATH="$PWD:$PATH"
 
 # Linux (ARM64)
-wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-linux-arm64.tar.gz
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.6.0-linux-arm64.tar.gz
 
 # macOS (Apple Silicon)
-wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-macos-arm64.tar.gz
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.6.0-macos-arm64.tar.gz
 
 # macOS (Intel)
-wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.5.0-macos-x86_64.tar.gz
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.6.0-macos-x86_64.tar.gz
 
 # Windows (x64)
-# Download fcm-0.5.0-windows-x64.zip from Releases
+# Download fcm-0.6.0-windows-x64.zip from Releases
 ```
 
 ### Build from Source
@@ -103,7 +103,7 @@ Browse all available chain files: https://hgdownload.cse.ucsc.edu/downloads.html
 # BED format
 fast-crossmap bed hg19ToHg38.chain.gz input.bed output.bed
 
-# BAM format (Linux/macOS only)
+# BAM format
 fast-crossmap bam hg19ToHg38.chain.gz input.bam output.bam
 
 # VCF format (requires reference genome)

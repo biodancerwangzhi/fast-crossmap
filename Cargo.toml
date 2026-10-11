@@ -1,6 +1,6 @@
 [package]
 name = "fast-crossmap"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 authors = ["FastCrossMap Contributors"]
 description = "High-performance genome coordinate liftover tool"

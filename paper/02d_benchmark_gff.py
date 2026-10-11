@@ -167,6 +167,14 @@ _REFSEQ_NAMES = {
     "NC_012920.1": "chrM",
 }
 
+# Output revision of `normalise_seqids`, carried in the `.renamed` cache name so
+# a cache written by an older revision can never be mistaken for a current one.
+# Bump on any change to what that function emits:
+#   v1 -- seqid renaming only.
+#   v2 -- also replaces a space in the `source` column with `_` (GFF3 forbids a
+#         space there; liftOver's `-gff` parser rejects the record over it).
+SEQID_NORM_VERSION = 2
+
 
 def count_gff_features(gff_file: Path) -> int:
     count = 0
@@ -204,8 +212,27 @@ def normalise_seqids(gff_file: Path) -> Path:
     unplaced scaffolds have no `chr*` equivalent and are left alone; those
     records stay unmapped, which is the honest outcome.
 
+    The same pass also de-spaces the `source` column. GFF3 forbids a space there
+    (the spec allows `[a-zA-Z.:^*$@!+_?-|]`), and RefSeq ships 27,821 records
+    whose source is the two-word `Curated Genomic`. FastCrossMap and CrossMap
+    tolerate them, but liftOver's `-gff` parser rejects the whole record over it
+    (`Expecting number line N`, exit 255), which is what made the RefSeq dataset
+    the one liftOver row that never ran. Replacing the space with `_` leaves the
+    coordinates untouched and lets all three tools read the same prepared input.
+
     Nothing is rewritten in place: the normalised file lands beside the original
-    as `<stem>.renamed<ext>`, which also makes a second run a no-op.
+    as `<stem>.renamed.v<SEQID_NORM_VERSION><ext>`, which also makes a second
+    run a no-op.
+
+    The version in that name is not decoration. The cache is trusted purely on
+    existence, so without it a `.renamed` written by an older revision of this
+    function keeps being reused no matter what the function is changed to do --
+    silently, since the generation message only prints on the run that actually
+    writes the file. That is exactly how the RefSeq liftOver row survived the
+    de-spacing fix above: the server still had a `.renamed` from before it, so
+    liftOver kept dying on `Expecting number line 46`. Bump the version whenever
+    the output of this function changes, and the stale file is bypassed instead
+    of honoured.
     """
     if gff_file.suffix not in ('.gff', '.gff3'):
         return gff_file
@@ -216,11 +243,12 @@ def normalise_seqids(gff_file: Path) -> Path:
     else:
         return gff_file  # GENCODE already uses chr* names
 
-    out = gff_file.with_name(gff_file.stem + '.renamed' + gff_file.suffix)
+    out = gff_file.with_name(
+        f"{gff_file.stem}.renamed.v{SEQID_NORM_VERSION}{gff_file.suffix}")
     if out.exists():
         return out
 
-    renamed = kept = total = 0
+    renamed = kept = total = sanitised = 0
     seen = set()
     with open(gff_file, 'r') as fin, open(out, 'w') as fout:
         for line in fin:
@@ -231,16 +259,29 @@ def normalise_seqids(gff_file: Path) -> Path:
             tab = line.find('\t')
             seqid = line[:tab] if tab > 0 else ''
             seen.add(seqid)
+            if tab <= 0:
+                fout.write(line)
+                kept += 1
+                continue
+            # `line[tab:]` is "\t<source>\t<type>\t<attributes>"; splitting off
+            # the first two tabs isolates the source column without touching the
+            # free-form attribute column.
+            cols = line[tab:].split('\t', 2)
+            if len(cols) >= 2 and ' ' in cols[1]:
+                cols[1] = cols[1].replace(' ', '_')
+                sanitised += 1
+            rest = '\t'.join(cols)
             if seqid in table:
-                fout.write(table[seqid] + line[tab:])
+                fout.write(table[seqid] + rest)
                 renamed += 1
             else:
-                fout.write(line)
+                fout.write(seqid + rest)
                 kept += 1
 
     print(f"    Seqid normalisation -> {out.name}: "
           f"{len({k for k in seen if k in table})} names renamed, "
           f"{renamed:,}/{total:,} records rewritten, "
+          f"{sanitised:,} source field(s) de-spaced, "
           f"{len(seen - set(table))} seqid(s) left as-is")
     stray = sorted(k for k in seen - set(table)
                    if not k.startswith(('NT_', 'NW_')))

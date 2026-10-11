@@ -467,6 +467,12 @@ def benchmark_dataset(vcf_file: Path, dataset_name: str, output_dir: Path) -> li
         "FastCrossMap", cmd, num_variants, size_mb, dataset_name, str(vcf_file), outputs=[out], warm_file=vcf_file,
                        warm_ref=REF_GENOME))
 
+    # The FastCrossMap numbers are in; its output is not read by anything
+    # below. Drop it before CrossMap starts so only one tool's ~11 GB copy is
+    # resident at a time -- otherwise the two coexist until the end of the
+    # dataset and double the peak this volume has to hold.
+    cleanup_outputs(out, Path(str(out) + ".unmap"))
+
     # 2. CrossMap
     print(f"  [2/2] CrossMap on {dataset_name}")
     out = ds_dir / "crossmap_output.vcf"

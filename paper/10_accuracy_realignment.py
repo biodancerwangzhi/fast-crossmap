@@ -137,7 +137,7 @@ def parse_bam_to_dict(bam_path: Path) -> dict:
     """Parse BAM into dict: read_name -> (chrom, pos, strand, mapq)."""
     result = subprocess.run(
         f"samtools view {bam_path}",
-        shell=True, capture_output=True, text=True, timeout=300
+        shell=True, capture_output=True, text=True, timeout=DEFAULT_TIMEOUT
     )
     reads = {}
     for line in result.stdout.split('\n'):

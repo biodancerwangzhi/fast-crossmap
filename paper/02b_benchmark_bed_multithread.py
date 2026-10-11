@@ -14,6 +14,7 @@ import subprocess
 import shutil
 import time
 import json
+import os
 from pathlib import Path
 from datetime import datetime
 
@@ -79,7 +80,19 @@ FCM_BIN = os.environ.get("FCM_BIN", "./target/release/fast-crossmap")
 
 # Test files
 CHAIN_FILE = DATA_DIR / "hg19ToHg38.over.chain.gz"
-BED_FILE = DATA_DIR / "encode_dnase_peaks.bed.gz"
+
+# Input for the thread-scaling curve. Override with FCM_MT_BED=<path>.
+#
+# The scaling test needs an input big enough that the conversion dominates the
+# fixed per-process cost (process start + chain load, measured at ~0.05 s for
+# FastCrossMap). On the old 296,898-record encode_dnase_peaks.bed the 1-thread
+# run was only ~0.29 s, so most of what the curve measured was that fixed cost
+# rather than the parallel fraction -- 8t showed a 2.5x speedup when the work
+# itself had sped up ~3.6x, and the curve flattened early for that reason.
+# bed_ccre_grch38.bed (2,348,854 records, ENCODE cCRE registry) leaves ~1.4 s of
+# real work per run at t=1, which is what makes the curve readable.
+BED_FILE = Path(os.environ.get("FCM_MT_BED",
+                               str(DATA_DIR / "bed_ccre_grch38.bed")))
 
 # Thread counts to test
 THREAD_COUNTS = [1, 2, 4, 8, 16]
@@ -109,6 +122,24 @@ def count_bed_records(bed_file):
     return count
 
 
+def warm_page_cache(path, chunk_size=8 << 20):
+    """Read `path` once and throw it away, so the timed run starts from RAM.
+
+    Thread counts are tested in order (1, 2, 4, 8, 16) and the same command is
+    repeated NUM_RUNS times per count, so whoever runs first pays for the disk
+    read whenever the input is larger than free RAM. A cold read there lands on
+    the t=1 runs -- exactly the baseline every speedup is divided by -- and would
+    understate every other thread count. The read is outside the timed region, so
+    it cannot inflate the measurement. Mirrors the warm-up in
+    03b_benchmark_bam_multithread.py.
+    """
+    if path is None or not Path(path).exists():
+        return
+    with open(path, "rb") as f:
+        while f.read(chunk_size):
+            pass
+
+
 def run_fastcrossmap(chain_file, input_file, output_file, threads=1):
     """Run FastCrossMap and return execution time"""
     cmd = [
@@ -118,7 +149,10 @@ def run_fastcrossmap(chain_file, input_file, output_file, threads=1):
         str(input_file),
         str(output_file)
     ]
-    
+
+    # Bring the input into page cache first, so the elapsed time below measures
+    # the conversion and not who happened to read the file first.
+    warm_page_cache(input_file)
     start = time.perf_counter()
     result = subprocess.run(cmd, capture_output=True, text=True)
     elapsed = time.perf_counter() - start
@@ -225,7 +259,8 @@ def main():
     output_data = {
         "timestamp": datetime.now().isoformat(),
         "format": "BED",
-        "input_file": str(BED_FILE),
+        "input_file": str(bed_file_to_use),
+        "warm_cache": True,
         "input_records": num_records,
         "chain_file": str(CHAIN_FILE),
         "num_runs": NUM_RUNS,

@@ -9,6 +9,7 @@ use fast_crossmap::core::{
 };
 use proptest::prelude::*;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Create a ChainFile with a single block for testing
 fn create_single_block_chain(
@@ -29,10 +30,10 @@ fn create_single_block_chain(
     
     ChainFile {
         blocks: vec![ChainBlock {
-            source_chrom: source_chrom.to_string(),
+            source_chrom: Arc::from(source_chrom),
             source_start,
             source_end,
-            target_chrom: target_chrom.to_string(),
+            target_chrom: Arc::from(target_chrom),
             target_start,
             target_end,
             target_strand,

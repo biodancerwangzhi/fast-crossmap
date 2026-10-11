@@ -19,6 +19,7 @@ use crate::core::Strand;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::sync::Arc;
 
 /// Error type for chain file parsing
 /// 
@@ -332,16 +333,37 @@ impl ChainHeader {
 /// A single alignment block from a chain file
 ///
 /// Represents a contiguous aligned region between source and target genomes.
+///
+/// The chromosome names are *interned* by [`parse_chain_reader`]: every block that
+/// names the same chromosome shares one `Arc<str>`, so a block carries two
+/// 16-byte pointers instead of two owned `String`s. A chain file repeats each
+/// name once per block (hg19ToHg38.over.chain: 53,950 blocks, but only 95 distinct
+/// source and 93 distinct target names), so the per-block names were almost all
+/// duplicates. Each block used to pay for **three** heap allocations: one on the
+/// source field, one on the target field, and a third cloned into the index's
+/// `IntervalValue` while the index was being built.
+///
+/// Measured peak RSS on `bed`, scaling a chain by concatenation and fitting the
+/// slope across 54k/108k/216k/432k blocks: **241 B/block before, 145 B/block
+/// after**. Both are flat across that whole range, so the cost really is linear in
+/// the block count. At the 53,950 blocks of hg19ToHg38.over.chain a `bed` run's
+/// peak RSS drops from 16,704 KB to 11,712 KB (and from 16,896 KB to 11,520 KB on a
+/// real 14.8 MB BED input) -- against a ~3.5 MB interpreter-and-nothing baseline.
+///
+/// The 145 B/block that remains is essentially two 72-byte payloads: during index
+/// construction the `ChainBlock` and the `Interval` it becomes are both alive, and
+/// `from_chain_data` consumes the blocks as it iterates, so only the intervals
+/// survive into the finished index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainBlock {
-    /// Source chromosome name
-    pub source_chrom: String,
+    /// Source chromosome name (interned)
+    pub source_chrom: Arc<str>,
     /// Source start position (0-based)
     pub source_start: u64,
     /// Source end position (exclusive)
     pub source_end: u64,
-    /// Target chromosome name
-    pub target_chrom: String,
+    /// Target chromosome name (interned)
+    pub target_chrom: Arc<str>,
     /// Target start position (0-based, already flipped for negative strand)
     pub target_start: u64,
     /// Target end position (exclusive, already flipped for negative strand)
@@ -452,12 +474,30 @@ impl Default for ChainFile {
     }
 }
 
+/// Return the interned form of a chromosome name, allocating it only the first time.
+///
+/// `table` holds one entry per *distinct* name, so it stays tiny (188 entries for
+/// hg19ToHg38.over.chain) while its `Arc<str>` values are shared by every block that
+/// uses the name. See [`ChainBlock`] for why that matters.
+#[inline]
+fn intern_chrom(table: &mut HashMap<String, Arc<str>>, name: &str) -> Arc<str> {
+    if let Some(interned) = table.get(name) {
+        return Arc::clone(interned);
+    }
+    let interned: Arc<str> = Arc::from(name);
+    table.insert(name.to_string(), Arc::clone(&interned));
+    interned
+}
+
 /// Parse a chain file from a reader
 ///
 /// This function handles the core parsing logic, supporting any `BufRead` source.
 pub fn parse_chain_reader<R: BufRead>(reader: R) -> Result<ChainFile, ChainParseError> {
     let mut result = ChainFile::new();
     let mut current_header: Option<ChainHeader> = None;
+    // Interned chromosome names, one entry per distinct name rather than per block.
+    let mut source_names: HashMap<String, Arc<str>> = HashMap::new();
+    let mut target_names: HashMap<String, Arc<str>> = HashMap::new();
     let mut source_pos: u64 = 0;
     let mut target_pos: u64 = 0;
     let mut line_number: usize = 0;
@@ -518,10 +558,10 @@ pub fn parse_chain_reader<R: BufRead>(reader: R) -> Result<ChainFile, ChainParse
             
             // Create alignment block
             let block = ChainBlock {
-                source_chrom: header.source_name.clone(),
+                source_chrom: intern_chrom(&mut source_names, &header.source_name),
                 source_start: block_source_start,
                 source_end: block_source_end,
-                target_chrom: header.target_name.clone(),
+                target_chrom: intern_chrom(&mut target_names, &header.target_name),
                 target_start: block_target_start,
                 target_end: block_target_end,
                 target_strand: header.target_strand,
@@ -784,8 +824,8 @@ chain 500 chr2 2000 + 0 50 chr2 2000 + 0 50 2
         let result = parse_chain_bytes(chain_data).unwrap();
         
         assert_eq!(result.blocks.len(), 2);
-        assert_eq!(result.blocks[0].source_chrom, "chr1");
-        assert_eq!(result.blocks[1].source_chrom, "chr2");
+        assert_eq!(&*result.blocks[0].source_chrom, "chr1");
+        assert_eq!(&*result.blocks[1].source_chrom, "chr2");
         
         // Check chromosome sizes
         assert_eq!(result.target_chrom_sizes.get("chr1"), Some(&1000));

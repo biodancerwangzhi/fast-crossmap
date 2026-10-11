@@ -494,7 +494,7 @@ impl CoordinateMapper {
                         target_info.target_chrom[3..].to_string()
                     } else {
                         // Same style, use as-is
-                        target_info.target_chrom.clone()
+                        target_info.target_chrom.to_string()
                     }
                 }
                 _ => update_chrom_id(&target_info.target_chrom, self.chrom_style),

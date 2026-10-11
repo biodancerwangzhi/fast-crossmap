@@ -7,20 +7,23 @@ use crate::core::Strand;
 use rust_lapper::{Interval, Lapper};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Value stored in each interval - target mapping information
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntervalValue {
-    /// Target chromosome name
-    pub target_chrom: String,
+    /// Target chromosome name (interned, shared with the source [`ChainBlock`])
+    ///
+    /// [`ChainBlock`]: crate::core::chain::ChainBlock
+    pub target_chrom: Arc<str>,
     /// Target start position (0-based, already flipped for negative strand)
     pub target_start: u64,
     /// Target end position (exclusive)
     pub target_end: u64,
     /// Target strand direction
     pub target_strand: Strand,
-    /// Source chromosome name (for reference)
-    pub source_chrom: String,
+    /// Source chromosome name (for reference; interned, not copied)
+    pub source_chrom: Arc<str>,
 }
 
 /// Type alias for chain intervals
@@ -31,8 +34,9 @@ pub type ChainInterval = Interval<u64, IntervalValue>;
 /// Provides O(log n + k) interval queries where n is the number of
 /// intervals and k is the number of overlapping results.
 pub struct ChainIndex {
-    /// Source chromosome -> interval tree (using Lapper)
-    maps: HashMap<String, Lapper<u64, IntervalValue>>,
+    /// Source chromosome -> interval tree (using Lapper). The key is the interned
+    /// name, so a lookup by `&str` goes through `Borrow<str>` and costs no allocation.
+    maps: HashMap<Arc<str>, Lapper<u64, IntervalValue>>,
     /// Target chromosome sizes
     pub target_sizes: HashMap<String, u64>,
     /// Source chromosome sizes
@@ -59,7 +63,7 @@ impl ChainIndex {
     /// Build index from parsed chain data
     pub fn from_chain_data(chain_file: ChainFile) -> Self {
         // Group blocks by source chromosome
-        let mut blocks_by_chrom: HashMap<String, Vec<ChainInterval>> = HashMap::new();
+        let mut blocks_by_chrom: HashMap<Arc<str>, Vec<ChainInterval>> = HashMap::new();
         
         for block in chain_file.blocks {
             let interval = Interval {
@@ -70,7 +74,7 @@ impl ChainIndex {
                     target_start: block.target_start,
                     target_end: block.target_end,
                     target_strand: block.target_strand,
-                    source_chrom: block.source_chrom.clone(),
+                    source_chrom: Arc::clone(&block.source_chrom),
                 },
             };
             
@@ -87,7 +91,7 @@ impl ChainIndex {
         for (chrom, intervals) in blocks_by_chrom {
             // Store chromosome aliases for flexible lookup
             let normalized = normalize_chrom_key(&chrom);
-            chrom_aliases.insert(normalized, chrom.clone());
+            chrom_aliases.insert(normalized, chrom.to_string());
             
             // Build the interval tree
             maps.insert(chrom, Lapper::new(intervals));
@@ -134,7 +138,7 @@ impl ChainIndex {
         // Try normalized lookup
         let normalized = normalize_chrom_key(chrom);
         if let Some(original) = self.chrom_aliases.get(&normalized) {
-            return self.maps.get(original);
+            return self.maps.get(original.as_str());
         }
         
         // Try common variants
@@ -148,7 +152,7 @@ impl ChainIndex {
         ];
         
         for variant in &variants {
-            if let Some(l) = self.maps.get(variant) {
+            if let Some(l) = self.maps.get(variant.as_str()) {
                 return Some(l);
             }
         }
@@ -158,8 +162,8 @@ impl ChainIndex {
     
     /// Get the canonical chromosome name used in the index
     pub fn get_canonical_chrom(&self, chrom: &str) -> Option<&str> {
-        if self.maps.contains_key(chrom) {
-            return self.maps.keys().find(|k| *k == chrom).map(|s| s.as_str());
+        if let Some((key, _)) = self.maps.get_key_value(chrom) {
+            return Some(&**key);
         }
         
         let normalized = normalize_chrom_key(chrom);
@@ -173,7 +177,7 @@ impl ChainIndex {
     
     /// Get all source chromosome names
     pub fn source_chroms(&self) -> impl Iterator<Item = &str> {
-        self.maps.keys().map(|s| s.as_str())
+        self.maps.keys().map(|s| &**s)
     }
     
     /// Get the number of intervals for a chromosome

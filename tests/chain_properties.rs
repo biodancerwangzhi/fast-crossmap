@@ -276,7 +276,7 @@ proptest! {
             let (exp_target_start, exp_target_end) = expected.expected_target_coords();
             
             prop_assert_eq!(
-                &actual.source_chrom, &expected.header.source_name,
+                &*actual.source_chrom, expected.header.source_name.as_str(),
                 "Block {}: source_chrom mismatch", i
             );
             prop_assert_eq!(
@@ -291,7 +291,7 @@ proptest! {
             );
             
             prop_assert_eq!(
-                &actual.target_chrom, &expected.header.target_name,
+                &*actual.target_chrom, expected.header.target_name.as_str(),
                 "Block {}: target_chrom mismatch", i
             );
             prop_assert_eq!(

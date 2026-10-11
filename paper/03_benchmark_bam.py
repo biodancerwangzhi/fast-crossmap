@@ -482,7 +482,7 @@ def benchmark_dataset(bam_file: Path, dataset_name: str, output_dir: Path) -> tu
     out = ds_dir / "fastcrossmap_output.bam"
     cmd = ["./target/release/fast-crossmap", "bam",
            str(CHAIN_FILE), str(bam_file), str(out)]
-    r = run_tool_benchmark("FastCrossMap (1t)", cmd, bam_stats, dataset_name, outputs=[out], warm_file=bam_file)
+    r = run_tool_benchmark("FastCrossMap", cmd, bam_stats, dataset_name, outputs=[out], warm_file=bam_file)
     r.input_file = str(bam_file)
     results.append(r)
 
@@ -504,6 +504,12 @@ def benchmark_dataset(bam_file: Path, dataset_name: str, output_dir: Path) -> tu
     r.input_file = str(bam_file)
     results.append(r)
 
+    # All three FastCrossMap numbers are in and none of those outputs is read
+    # below. Drop them before CrossMap starts so only one tool's copy is
+    # resident at a time, which roughly halves this dataset's peak footprint.
+    cleanup_outputs(*(ds_dir / f"fastcrossmap{suffix}_output.bam"
+                     for suffix in ("", "_4t", "_8t")))
+
     # 4. CrossMap (single-thread, Python)
     print(f"  [4/5] CrossMap on {dataset_name}")
     out = ds_dir / "crossmap_output.bam"
@@ -517,14 +523,14 @@ def benchmark_dataset(bam_file: Path, dataset_name: str, output_dir: Path) -> tu
     r.input_file = str(bam_file)
     results.append(r)
 
-    # 5. FastRemap (uses ~33 threads by default, no thread control option)
+    # 5. FastRemap (uses ~27 threads by default, no thread control option)
     print(f"  [5/5] FastRemap (multi-thread, default) on {dataset_name}")
     out = ds_dir / "fastremap_output.bam"
     unmap = ds_dir / "fastremap_output.bam.unmap"
     chain_plain = ensure_chain_unzipped()
     cmd = ["FastRemap", "-f", "bam", "-c", str(chain_plain),
            "-i", str(bam_file), "-o", str(out), "-u", str(unmap)]
-    r = run_tool_benchmark("FastRemap (multi-thread)", cmd, bam_stats, dataset_name,
+    r = run_tool_benchmark("FastRemap", cmd, bam_stats, dataset_name,
                            outputs=[Path(str(out) + ".bam")], warm_file=bam_file)
     r.input_file = str(bam_file)
     results.append(r)

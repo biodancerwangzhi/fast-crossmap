@@ -348,6 +348,30 @@ fn main() -> anyhow::Result<()> {
             eprintln!("Failed:          {}", stats.failed);
             eprintln!("Paired:          {}", stats.paired);
             eprintln!("Single:          {}", stats.single);
+
+            // Reproduce CrossMap's per-category breakdown so the counts can be
+            // reconciled against CrossMap's own report for the same input.
+            let c = |t| stats.count_of(t);
+            eprintln!("\tQC failed: {}", c(formats::bam::AlignmentTag::QF));
+            if formats::bam::AlignmentTag::PAIRED.iter().any(|&t| c(t) > 0) {
+                eprintln!("\tPaired-end reads:");
+                eprintln!("\t\tR1 unique, R2 unique (UU): {}", c(formats::bam::AlignmentTag::UU));
+                eprintln!("\t\tR1 unique, R2 unmapp (UN): {}", c(formats::bam::AlignmentTag::UN));
+                eprintln!("\t\tR1 unique, R2 multiple (UM): {}", c(formats::bam::AlignmentTag::UM));
+                eprintln!("\t\tR1 multiple, R2 multiple (MM): {}", c(formats::bam::AlignmentTag::MM));
+                eprintln!("\t\tR1 multiple, R2 unique (MU): {}", c(formats::bam::AlignmentTag::MU));
+                eprintln!("\t\tR1 multiple, R2 unmapped (MN): {}", c(formats::bam::AlignmentTag::MN));
+                eprintln!("\t\tR1 unmap, R2 unmap (NN): {}", c(formats::bam::AlignmentTag::NN));
+                eprintln!("\t\tR1 unmap, R2 unique (NU): {}", c(formats::bam::AlignmentTag::NU));
+                eprintln!("\t\tR1 unmap, R2 multiple (NM): {}", c(formats::bam::AlignmentTag::NM));
+            }
+            if formats::bam::AlignmentTag::SINGLE.iter().any(|&t| c(t) > 0) {
+                eprintln!("\tSingle-end reads:");
+                eprintln!("\t\tUniquley mapped (SU): {}", c(formats::bam::AlignmentTag::SU));
+                eprintln!("\t\tMultiple mapped (SM): {}", c(formats::bam::AlignmentTag::SM));
+                eprintln!("\t\tUnmapped (SN): {}", c(formats::bam::AlignmentTag::SN));
+            }
+
             eprintln!("Time elapsed:    {:.2}s", start.elapsed().as_secs_f64());
         }
         

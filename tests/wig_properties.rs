@@ -438,3 +438,95 @@ variableStep chrom=chr2 span=10
     let _ = std::fs::remove_file(format!("{}.sorted.bgr", crossmap_output.display()));
     let _ = std::fs::remove_file(format!("{}.bw", crossmap_output.display()));
 }
+
+/// Chromosomes must come out grouped and in lexicographic order even when the
+/// input lists them out of order and revisits one of them.
+///
+/// A writer that emitted each block the moment it saw a new chromosome would
+/// produce two `chr1` blocks here, and would emit them in input order
+/// (`chr1, chr2, chr10`) rather than the lexicographic order CrossMap writes.
+#[test]
+fn test_wig_out_of_order_split_chromosome() {
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
+
+    if !chain_path.exists() {
+        eprintln!("Skipping test: chain file not found");
+        return;
+    }
+
+    let index = ChainIndex::from_chain_file(&chain_path).expect("Failed to load chain file");
+    let mapper = CoordinateMapper::new(index, ChromStyle::AsIs);
+
+    // chr1 is visited twice, with chr2 and chr10 in between.
+    let test_wig = "\
+variableStep chrom=chr1 span=10
+100000 1.0
+100010 2.0
+variableStep chrom=chr2 span=10
+50000 3.0
+50010 4.0
+variableStep chrom=chr10 span=10
+100000 5.0
+100010 6.0
+variableStep chrom=chr1 span=10
+100200 7.0
+100210 8.0
+";
+
+    let temp_dir = std::env::temp_dir();
+    let unique_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let input_path = temp_dir.join(format!("wig_split_test_{}.wig", unique_id));
+    let output_prefix = temp_dir.join(format!("wig_split_output_{}", unique_id));
+
+    std::fs::write(&input_path, test_wig).unwrap();
+
+    let stats = convert_wig(&input_path, &output_prefix, &mapper).unwrap();
+    assert_eq!(stats.total, 8, "all eight points should be read");
+    assert_eq!(stats.success, 8, "all eight points should map");
+    assert_eq!(stats.failed, 0, "no point should fail to map");
+
+    let output_path = format!("{}.wig", output_prefix.display());
+    let output = std::fs::read_to_string(&output_path).unwrap();
+
+    // Collect (chromosome, data-line count) per `variableStep` block.
+    let mut blocks: Vec<(String, usize)> = Vec::new();
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("variableStep chrom=") {
+            let chrom = rest.split_whitespace().next().unwrap().to_string();
+            blocks.push((chrom, 0));
+            continue;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        assert_eq!(line.split('\t').count(), 2, "Wiggle data line should have 2 fields");
+        blocks.last_mut().expect("data before any declaration").1 += 1;
+    }
+
+    assert_eq!(
+        blocks,
+        vec![
+            ("chr1".to_string(), 4),
+            ("chr10".to_string(), 2),
+            ("chr2".to_string(), 2),
+        ],
+        "both chr1 runs must share one block, and chr10 must sort before chr2"
+    );
+    // The two chr1 runs are merged into one block, ordered by position.
+    let chr1_positions: Vec<u64> = output
+        .lines()
+        .skip_while(|line| !line.starts_with("variableStep chrom=chr1 "))
+        .skip(1)
+        .take(4)
+        .map(|line| line.split('\t').next().unwrap().parse().unwrap())
+        .collect();
+    assert_eq!(chr1_positions, vec![100000, 100010, 100200, 100210]);
+
+    // Cleanup
+    let _ = std::fs::remove_file(&input_path);
+    let _ = std::fs::remove_file(&output_path);
+    let _ = std::fs::remove_file(format!("{}.unmap.wig", output_prefix.display()));
+}

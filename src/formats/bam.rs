@@ -3,13 +3,14 @@
 //! Handles BAM/SAM format conversion for alignment data.
 //! Uses noodles (pure Rust) for reading and writing BAM files.
 
-use crate::core::{CoordinateMapper, Strand};
+use crate::core::{CoordinateMapper, MappingSegment, Strand};
 use noodles_bam as bam;
 use noodles_core::Position;
 use noodles_sam::{
     self as sam,
     alignment::{
         record::Flags,
+        record::MappingQuality,
         record::cigar::{op::Kind as CigarKind, Op as SamOp},
         record_buf::{
             self,
@@ -17,7 +18,10 @@ use noodles_sam::{
         },
         RecordBuf,
     },
-    header::record::value::{map::ReferenceSequence, Map},
+    header::record::value::{
+        map::{self, ReferenceSequence},
+        Map,
+    },
 };
 use noodles_sam::alignment::record::data::field::Tag as SamTag;
 use std::collections::HashMap;
@@ -71,6 +75,50 @@ impl AlignmentTag {
             AlignmentTag::SU => "SU",
         }
     }
+
+    /// The paired-end categories, in the order CrossMap prints them.
+    pub const PAIRED: [AlignmentTag; 9] = [
+        AlignmentTag::UU, AlignmentTag::UN, AlignmentTag::UM,
+        AlignmentTag::MM, AlignmentTag::MU, AlignmentTag::MN,
+        AlignmentTag::NN, AlignmentTag::NU, AlignmentTag::NM,
+    ];
+
+    /// The single-end categories, in the order CrossMap prints them.
+    pub const SINGLE: [AlignmentTag; 3] = [
+        AlignmentTag::SU, AlignmentTag::SM, AlignmentTag::SN,
+    ];
+
+    /// A dense index into `ConversionStats::counts`.
+    pub fn index(&self) -> usize {
+        match self {
+            AlignmentTag::QF => 0, AlignmentTag::NN => 1,
+            AlignmentTag::NU => 2, AlignmentTag::NM => 3,
+            AlignmentTag::UN => 4, AlignmentTag::UU => 5,
+            AlignmentTag::UM => 6, AlignmentTag::MN => 7,
+            AlignmentTag::MU => 8, AlignmentTag::MM => 9,
+            AlignmentTag::SN => 10, AlignmentTag::SM => 11,
+            AlignmentTag::SU => 12,
+        }
+    }
+
+    /// A human-readable label, matching CrossMap's summary wording.
+    pub fn description(&self) -> &'static str {
+        match self {
+            AlignmentTag::QF => "QC failed",
+            AlignmentTag::NN => "R1 unmap, R2 unmap",
+            AlignmentTag::NU => "R1 unmap, R2 unique",
+            AlignmentTag::NM => "R1 unmap, R2 multiple",
+            AlignmentTag::UN => "R1 unique, R2 unmapp",
+            AlignmentTag::UU => "R1 unique, R2 unique",
+            AlignmentTag::UM => "R1 unique, R2 multiple",
+            AlignmentTag::MN => "R1 multiple, R2 unmapped",
+            AlignmentTag::MU => "R1 multiple, R2 unique",
+            AlignmentTag::MM => "R1 multiple, R2 multiple",
+            AlignmentTag::SN => "Unmapped",
+            AlignmentTag::SM => "Multiple mapped",
+            AlignmentTag::SU => "Uniquley mapped",
+        }
+    }
 }
 
 /// Conversion statistics
@@ -82,6 +130,19 @@ pub struct ConversionStats {
     pub failed: usize,
     pub paired: usize,
     pub single: usize,
+    /// How many records fell into each `AlignmentTag` category. CrossMap
+    /// reports these itself, so they double as a compatibility check.
+    pub counts: [usize; 13],
+}
+
+impl ConversionStats {
+    pub fn count_of(&self, tag: AlignmentTag) -> usize {
+        self.counts[tag.index()]
+    }
+
+    pub fn count(&mut self, tag: AlignmentTag) {
+        self.counts[tag.index()] += 1;
+    }
 }
 
 /// PLACEHOLDER_CIGAR
@@ -298,8 +359,15 @@ fn build_target_header(
     original_header: &sam::Header,
     target_sizes: &HashMap<String, u64>,
 ) -> sam::Header {
-    let mut builder = sam::Header::builder()
-        .set_header(Default::default());
+    // CrossMap replaces @HD outright with a fixed `VN:1.0 SO:coordinate`
+    // (cmmodule/sam_header.py), keeping nothing from the input's own @HD.
+    // noodles' `Map::<map::Header>` only models VN, so SO is carried as an
+    // "other" field -- which is exactly where its writer looks for it.
+    let mut hd = Map::<map::Header>::new(map::header::Version::new(1, 0));
+    hd.other_fields_mut()
+        .insert(map::header::tag::SORT_ORDER, "coordinate".into());
+
+    let mut builder = sam::Header::builder().set_header(hd);
 
     let mut sorted_chroms: Vec<_> = target_sizes.iter().collect();
     sorted_chroms.sort_by(|a, b| a.0.cmp(b.0));
@@ -362,118 +430,539 @@ fn value_to_buf(v: &sam::alignment::record::data::field::Value<'_>) -> Option<Bu
 
 /// PLACEHOLDER_CONVERT_RECORD
 
-fn convert_record(
-    record: &bam::Record,
-    input_header: &sam::Header,
-    output_header: &sam::Header,
+/// Insert-size statistics used to re-derive the "proper pair" bit (`0x02`).
+///
+/// The defaults are CrossMap's (`cmmodule/mapbam.py`): a pair counts as proper
+/// when its two ends land on opposite strands *and* the new template length
+/// falls within `mean +/- fold * stdev`. With these defaults that window is
+/// `[110, 290]`.
+#[derive(Debug, Clone, Copy)]
+pub struct InsertSizeParams {
+    pub mean: f64,
+    pub stdev: f64,
+    pub fold: f64,
+}
+
+impl Default for InsertSizeParams {
+    fn default() -> Self {
+        Self { mean: 200.0, stdev: 30.0, fold: 3.0 }
+    }
+}
+
+/// An input alignment with every format-specific detail already decoded, so
+/// the BAM and SAM readers can share a single conversion routine.
+struct DecodedRecord {
+    flags: Flags,
+    name: Vec<u8>,
+    seq: Vec<u8>,
+    qual: Vec<u8>,
+    mapq: Option<MappingQuality>,
+    /// Source reference name and 0-based half-open interval. Absent for a
+    /// record that was never placed, which is what `is_unmapped` means.
+    chrom: Option<String>,
+    start: u64,
+    end: u64,
+    /// Source CIGAR, in input order.
+    cigar: Vec<CigarOp>,
+    data: record_buf::Data,
+    /// Mate reference name and 0-based alignment start, when the record
+    /// carries them.
+    mate_chrom: Option<String>,
+    mate_start: Option<u64>,
+    mate_reverse: bool,
+}
+
+impl DecodedRecord {
+    fn query_strand(&self) -> Strand {
+        if self.flags.is_reverse_complemented() { Strand::Minus } else { Strand::Plus }
+    }
+
+    fn mate_strand(&self) -> Strand {
+        if self.mate_reverse { Strand::Minus } else { Strand::Plus }
+    }
+
+    /// The record's own liftover, or `None` when it cannot be placed -- either
+    /// because it was already unmapped or because the chain does not cover it.
+    fn self_mapping(&self, mapper: &CoordinateMapper) -> Option<Vec<MappingSegment>> {
+        if self.flags.is_unmapped() { return None; }
+        let chrom = self.chrom.as_deref()?;
+        map_interval(mapper, chrom, self.start, self.end, self.query_strand())
+    }
+
+    /// The mate's liftover.
+    ///
+    /// CrossMap never looks at the mate record itself: it lifts over a single
+    /// base at the mate's own alignment start (`mapbam.py`). The mate's CIGAR
+    /// and length are therefore irrelevant.
+    fn mate_mapping(&self, mapper: &CoordinateMapper) -> Option<Vec<MappingSegment>> {
+        if self.flags.is_mate_unmapped() { return None; }
+        let chrom = self.mate_chrom.as_deref()?;
+        let start = self.mate_start?;
+        map_interval(mapper, chrom, start, start + 1, self.mate_strand())
+    }
+}
+
+/// Map one source interval, normalising "not mapped" to `None`.
+///
+/// This mirrors `cmmodule.utils.map_coordinates`, whose callers treat a
+/// missing mapping, a single mapping and several mappings as three distinct
+/// outcomes.
+fn map_interval(
     mapper: &CoordinateMapper,
-) -> Option<(RecordBuf, AlignmentTag)> {
-    let flags = record.flags();
-    if flags.is_unmapped() { return None; }
+    chrom: &str,
+    start: u64,
+    end: u64,
+    strand: Strand,
+) -> Option<Vec<MappingSegment>> {
+    match mapper.map(chrom, start, end, strand) {
+        Some(v) if !v.is_empty() => Some(v),
+        _ => None,
+    }
+}
 
-    let tid = record.reference_sequence_id()?.ok()?;
-    let chrom = get_chrom_name(input_header, tid)?;
-    let start = record.alignment_start()?.ok()?.get() as u64 - 1;
-    let cigar_ops = parse_cigar_from_bam(record);
-    let ref_len = CigarReconstructor::reference_length(&cigar_ops) as u64;
-    let end = start + ref_len;
+/// Resolve a mapped interval to the output header's reference id, keeping the
+/// segments themselves for the strand and position.
+fn place(
+    output_header: &sam::Header,
+    segments: Option<Vec<MappingSegment>>,
+) -> Option<(usize, Vec<MappingSegment>)> {
+    let segments = segments?;
+    let tid = get_tid(output_header, &segments[0].target.chrom)?;
+    Some((tid, segments))
+}
 
-    let query_strand = if flags.is_reverse_complemented() { Strand::Minus } else { Strand::Plus };
-    let segments = mapper.map(&chrom, start, end, query_strand)?;
-    if segments.is_empty() { return None; }
+/// Everything the conversion decides about one output record, before it is
+/// turned into a `RecordBuf`. Positions are 1-based.
+struct OutSpec {
+    flags: Flags,
+    /// `None` writes `*` in the RNAME column.
+    tid: Option<usize>,
+    /// `None` writes `0` in the POS column. Unmapped output ignores this and
+    /// writes 1 -- see `build_output`.
+    pos: Option<usize>,
+    /// `None` writes `255` ("unavailable") in the MAPQ column.
+    mapq: Option<MappingQuality>,
+    /// The CIGAR to write, in source order; empty writes `*`. It is reversed
+    /// for the output when `reverse_complement` is set.
+    cigar: Vec<CigarOp>,
+    reverse_complement: bool,
+    /// `None` writes `*` in the RNEXT column.
+    mate_tid: Option<usize>,
+    /// The PNEXT column. CrossMap leaves its zero-based field at zero and
+    /// pysam renders that one-based, so its output always reads `1`; writing
+    /// position 1 outright reproduces that on both the SAM and BAM paths.
+    mate_pos: usize,
+    template_length: i32,
+}
 
-    let is_multiple = segments.len() > 1;
-    let seg = &segments[0];
-    let target_chrom = &seg.target.chrom;
-    let target_start = seg.target.start;
-    let target_strand = seg.target.strand;
-    let target_tid = get_tid(output_header, target_chrom)?;
+/// Reproduce how CrossMap re-serialises the auxiliary fields.
+///
+/// CrossMap passes the tags through pysam (`set_tags`, then an explicit re-set
+/// of the read group tag). That round trip does two things the SAM
+/// specification does not ask for:
+///
+/// 1. every character (`A`) field comes back as a string (`Z`);
+/// 2. `RG` is written last, so it always ends up at the end of the field list.
+///
+/// Everything else survives untouched: the order of the other fields, integer
+/// widths (an `i` stays an `i` even at 2e9), floats, arrays, and one-character
+/// string fields, which are *not* promoted to `A`.
+fn crossmap_tags(data: &record_buf::Data) -> record_buf::Data {
+    let mut out: Vec<(SamTag, BufValue)> = Vec::with_capacity(data.len());
+    let mut read_group = None;
 
-    let need_revcomp = target_strand == Strand::Minus && query_strand == Strand::Plus
-        || target_strand == Strand::Plus && query_strand == Strand::Minus;
+    for (tag, value) in data.iter() {
+        let value = match value {
+            BufValue::Character(c) => BufValue::String(vec![*c].into()),
+            v => v.clone(),
+        };
 
-    let seq_bytes = seq_bytes_from_record(record);
-    let qual_bytes = qual_bytes_from_record(record);
+        if tag == SamTag::READ_GROUP {
+            read_group = Some((tag, value));
+        } else {
+            out.push((tag, value));
+        }
+    }
 
-    let (new_seq, new_qual, new_cigar) = if need_revcomp {
-        (revcomp_seq(&seq_bytes), reverse_qual(&qual_bytes), CigarReconstructor::reverse(&cigar_ops))
+    // `Data` is order preserving, so appending after the loop moves `RG` last.
+    if let Some(entry) = read_group {
+        out.push(entry);
+    }
+
+    out.into_iter().collect()
+}
+
+fn build_output(spec: OutSpec, rec: &DecodedRecord) -> RecordBuf {
+    let (seq, qual) = if spec.reverse_complement {
+        (revcomp_seq(&rec.seq), reverse_qual(&rec.qual))
     } else {
-        (seq_bytes, qual_bytes, cigar_ops)
+        (rec.seq.clone(), rec.qual.clone())
     };
 
-    let noodles_cigar = ops_to_noodles_cigar(&new_cigar);
-    let pos = Position::try_from((target_start + 1) as usize).ok()?;
-
-    let mut new_flags = flags;
-    if need_revcomp { new_flags ^= Flags::REVERSE_COMPLEMENTED; }
-    if is_multiple { new_flags |= Flags::SECONDARY; }
-
-    let aux_data = copy_aux_data(record);
+    let cigar = if spec.reverse_complement {
+        CigarReconstructor::reverse(&spec.cigar)
+    } else {
+        spec.cigar.clone()
+    };
 
     let mut builder = RecordBuf::builder()
-        .set_name(record.name().unwrap_or(b"*".into()))
-        .set_flags(new_flags)
-        .set_reference_sequence_id(target_tid)
-        .set_alignment_start(pos)
-        .set_cigar(noodles_cigar)
-        .set_template_length(0)
-        .set_sequence(record_buf::Sequence::from(new_seq.as_slice()))
-        .set_quality_scores(record_buf::QualityScores::from(new_qual))
-        .set_data(aux_data);
-    if let Some(mq) = record.mapping_quality() {
-        builder = builder.set_mapping_quality(mq);
+        .set_name(rec.name.as_slice())
+        .set_flags(spec.flags)
+        .set_cigar(ops_to_noodles_cigar(&cigar))
+        .set_mate_alignment_start(Position::MIN)
+        .set_template_length(spec.template_length)
+        .set_sequence(record_buf::Sequence::from(seq.as_slice()))
+        .set_quality_scores(record_buf::QualityScores::from(qual))
+        .set_data(crossmap_tags(&rec.data));
+
+    if let Some(tid) = spec.tid {
+        builder = builder.set_reference_sequence_id(tid);
     }
-    let new_record = builder
-        .build();
+    match spec.pos.and_then(Position::new) {
+        Some(pos) => builder = builder.set_alignment_start(pos),
+        // CrossMap leaves the field at zero for an unmapped read and pysam
+        // renders it one-based, so its output reads `POS=1` under `RNAME=*`.
+        // Writing position 1 reproduces that on both the SAM and BAM paths
+        // (the BAM encoder subtracts one again).
+        None if spec.tid.is_none() => {
+            builder = builder.set_alignment_start(Position::MIN);
+        }
+        None => {}
+    }
+    if let Some(mapq) = spec.mapq {
+        builder = builder.set_mapping_quality(mapq);
+    }
+    if let Some(mate_tid) = spec.mate_tid {
+        builder = builder.set_mate_reference_sequence_id(mate_tid);
+    }
+    if let Some(mate_pos) = Position::new(spec.mate_pos) {
+        builder = builder.set_mate_alignment_start(mate_pos);
+    }
 
-    let tag = if flags.is_segmented() {
-        if flags.is_mate_unmapped() { AlignmentTag::MU } else { AlignmentTag::MM }
-    } else if is_multiple { AlignmentTag::SM } else { AlignmentTag::SU };
-
-    Some((new_record, tag))
+    builder.build()
 }
+
+fn maybe(flag: Flags, on: bool) -> Flags {
+    if on { flag } else { Flags::default() }
+}
+
+/// Recognise a BAM alignment into the format-independent form.
+fn decode_bam_record(record: &bam::Record, input_header: &sam::Header) -> DecodedRecord {
+    let flags = record.flags();
+    let chrom = record.reference_sequence_id()
+        .and_then(|r| r.ok())
+        .and_then(|tid| get_chrom_name(input_header, tid));
+    let start = record.alignment_start()
+        .and_then(|r| r.ok())
+        .map(|p| p.get() as u64 - 1);
+    let cigar = parse_cigar_from_bam(record);
+
+    let mate_chrom = record.mate_reference_sequence_id()
+        .and_then(|r| r.ok())
+        .and_then(|tid| get_chrom_name(input_header, tid));
+    let mate_start = record.mate_alignment_start()
+        .and_then(|r| r.ok())
+        .map(|p| p.get() as u64 - 1);
+
+    let (start0, end) = match start {
+        Some(s) => (s, s + CigarReconstructor::reference_length(&cigar) as u64),
+        None => (0, 0),
+    };
+
+    DecodedRecord {
+        flags,
+        name: record.name().map(|n| n.to_vec()).unwrap_or_else(|| b"*".to_vec()),
+        seq: seq_bytes_from_record(record),
+        qual: qual_bytes_from_record(record),
+        mapq: record.mapping_quality(),
+        chrom,
+        start: start0,
+        end,
+        cigar,
+        data: copy_aux_data(record),
+        mate_chrom,
+        mate_start,
+        mate_reverse: flags.is_mate_reverse_complemented(),
+    }
+}
+
+/// Recognise a SAM alignment buffer into the format-independent form.
+fn decode_sam_record(record_buf: &RecordBuf, input_header: &sam::Header) -> DecodedRecord {
+    let flags = record_buf.flags();
+    let chrom = record_buf.reference_sequence_id()
+        .and_then(|tid| get_chrom_name(input_header, tid));
+    let start = record_buf.alignment_start().map(|p| p.get() as u64 - 1);
+    let cigar: Vec<CigarOp> = record_buf.cigar().as_ref().iter()
+        .map(|op| CigarOp::from_noodles(*op))
+        .collect();
+
+    let mate_chrom = record_buf.mate_reference_sequence_id()
+        .and_then(|tid| get_chrom_name(input_header, tid));
+    let mate_start = record_buf.mate_alignment_start().map(|p| p.get() as u64 - 1);
+
+    let (start0, end) = match start {
+        Some(s) => (s, s + CigarReconstructor::reference_length(&cigar) as u64),
+        None => (0, 0),
+    };
+
+    DecodedRecord {
+        flags,
+        name: record_buf.name().map(|n| n.to_vec()).unwrap_or_else(|| b"*".to_vec()),
+        seq: record_buf.sequence().as_ref().to_vec(),
+        qual: record_buf.quality_scores().as_ref().to_vec(),
+        mapq: record_buf.mapping_quality(),
+        chrom,
+        start: start0,
+        end,
+        cigar,
+        data: record_buf.data().clone(),
+        mate_chrom,
+        mate_start,
+        mate_reverse: flags.is_mate_reverse_complemented(),
+    }
+}
+
+/// Convert one decoded alignment, reproducing CrossMap's field rules.
+///
+/// Returns the record to emit, how to count it, and which CrossMap category it
+/// fell into. A record is never dropped: a read that cannot be placed is
+/// written out with no reference, as CrossMap does.
+fn convert_decoded(
+    rec: &DecodedRecord,
+    output_header: &sam::Header,
+    mapper: &CoordinateMapper,
+    is: &InsertSizeParams,
+) -> (BamClass, RecordBuf, AlignmentTag) {
+    let (spec, tag) = if rec.flags.is_segmented() {
+        convert_paired(rec, output_header, mapper, is)
+    } else {
+        convert_single(rec, output_header, mapper)
+    };
+
+    let class = if spec.tid.is_some() {
+        BamClass::Mapped
+    } else if rec.flags.is_unmapped() {
+        BamClass::Unmapped
+    } else {
+        BamClass::Failed
+    };
+
+    (class, build_output(spec, rec), tag)
+}
+
+/// CrossMap's single-end branch (`mapbam.py`).
+fn convert_single(
+    rec: &DecodedRecord,
+    output_header: &sam::Header,
+    mapper: &CoordinateMapper,
+) -> (OutSpec, AlignmentTag) {
+    let mut spec = OutSpec {
+        // The FLAG is rebuilt from zero, so anything the input carried beyond
+        // the two bits re-derived below -- QC fail, duplicate, supplementary
+        // -- is dropped, exactly as CrossMap drops it.
+        flags: Flags::default(),
+        tid: None,
+        pos: None,
+        mapq: None,
+        cigar: rec.cigar.clone(),
+        reverse_complement: false,
+        mate_tid: None,
+        mate_pos: 1,
+        template_length: 0,
+    };
+
+    match place(output_header, rec.self_mapping(mapper)) {
+        None => {
+            spec.flags |= Flags::UNMAPPED;
+            // A read that was already unmapped keeps its CIGAR; one that
+            // merely failed to lift over loses it.
+            if !rec.flags.is_unmapped() {
+                spec.cigar = Vec::new();
+            }
+            (spec, AlignmentTag::SN)
+        }
+        Some((tid, segments)) => {
+            let target = segments[0].target.clone();
+            let multiple = segments.len() > 1;
+
+            if target.strand == Strand::Minus {
+                spec.flags |= Flags::REVERSE_COMPLEMENTED;
+            }
+            if multiple {
+                spec.flags |= Flags::SECONDARY;
+            }
+
+            spec.tid = Some(tid);
+            spec.pos = Some(target.start as usize + 1);
+            spec.mapq = rec.mapq;
+            spec.reverse_complement = target.strand != rec.query_strand();
+
+            let tag = if multiple { AlignmentTag::SM } else { AlignmentTag::SU };
+            (spec, tag)
+        }
+    }
+}
+
+/// Which of CrossMap's nine paired categories a pair falls into, from the shape
+/// of each end's mapping: `None` if the end did not lift over, `Some(false)` if
+/// it landed in exactly one place, `Some(true)` if it landed in several. This
+/// is the `if`/`elif` ladder in `mapbam.py` collapsed into a match.
+fn paired_category(read1: Option<bool>, read2: Option<bool>) -> AlignmentTag {
+    match (read1, read2) {
+        (None, None) => AlignmentTag::NN,
+        (None, Some(false)) => AlignmentTag::NU,
+        (None, Some(true)) => AlignmentTag::NM,
+        (Some(false), None) => AlignmentTag::UN,
+        (Some(true), None) => AlignmentTag::MN,
+        (Some(false), Some(false)) => AlignmentTag::UU,
+        (Some(false), Some(true)) => AlignmentTag::UM,
+        (Some(true), Some(false)) => AlignmentTag::MU,
+        (Some(true), Some(true)) => AlignmentTag::MM,
+    }
+}
+
+/// CrossMap's paired-end branch (`mapbam.py`): nine categories, each with its
+/// own rule for the FLAG, RNAME/POS, MAPQ, CIGAR, RNEXT/PNEXT and TLEN.
+fn convert_paired(
+    rec: &DecodedRecord,
+    output_header: &sam::Header,
+    mapper: &CoordinateMapper,
+    is: &InsertSizeParams,
+) -> (OutSpec, AlignmentTag) {
+    // Only SEGMENTED and the first/last-segment bit survive from the input;
+    // pysam's `is_read1`/`is_read2` are edge triggered, so a record with both
+    // bits set is treated as read 1.
+    let mut base = Flags::SEGMENTED;
+    if rec.flags.is_first_segment() && !rec.flags.is_last_segment() {
+        base |= Flags::FIRST_SEGMENT;
+    } else if rec.flags.is_last_segment() && !rec.flags.is_first_segment() {
+        base |= Flags::LAST_SEGMENT;
+    }
+
+    // QC-failed pairs are written out before anything is mapped.
+    if rec.flags.is_qc_fail() {
+        let spec = OutSpec {
+            flags: base | Flags::QC_FAIL,
+            tid: None,
+            pos: None,
+            mapq: None,
+            cigar: rec.cigar.clone(),
+            reverse_complement: false,
+            mate_tid: None,
+            mate_pos: 1,
+            template_length: 0,
+        };
+        return (spec, AlignmentTag::QF);
+    }
+
+    let read1 = place(output_header, rec.self_mapping(mapper));
+    let read2 = place(output_header, rec.mate_mapping(mapper));
+
+    let seg1 = read1.as_ref().map(|(_, segments)| &segments[0]);
+    let tid1 = read1.as_ref().map(|(tid, _)| *tid);
+    let pos1 = seg1.map(|s| s.target.start as usize + 1);
+    let flip1 = seg1.map_or(false, |s| s.target.strand != rec.query_strand());
+    let minus1 = seg1.map_or(false, |s| s.target.strand == Strand::Minus);
+    let multiple1 = read1.as_ref().map_or(false, |(_, segments)| segments.len() > 1);
+
+    let seg2 = read2.as_ref().map(|(_, segments)| &segments[0]);
+    let tid2 = read2.as_ref().map(|(tid, _)| *tid);
+    let pos2 = seg2.map(|s| s.target.start as usize + 1);
+    let minus2 = seg2.map_or(false, |s| s.target.strand == Strand::Minus);
+    let multiple2 = read2.as_ref().map_or(false, |(_, segments)| segments.len() > 1);
+
+    let tag = paired_category(tid1.map(|_| multiple1), tid2.map(|_| multiple2));
+
+    let (flags, tid, pos, mapq, reverse_complement, mate_tid, mate_pos, template_length) =
+        match tag {
+            // Neither end placed: the read keeps its bases and nothing else.
+            AlignmentTag::NN => (
+                base | Flags::UNMAPPED,
+                None, None, None, false, None, 1, 0,
+            ),
+
+            // Read 1 unplaced, read 2 placed: CrossMap parks the read on its
+            // mate's new position and points RNEXT at the very same place.
+            AlignmentTag::NU | AlignmentTag::NM => {
+                let flags = base
+                    | maybe(Flags::MATE_REVERSE_COMPLEMENTED, minus2)
+                    | maybe(Flags::SECONDARY, tag == AlignmentTag::NM);
+                // A read that was already unmapped keeps its own MAPQ; one
+                // that merely failed to lift over has none.
+                let mapq = if rec.flags.is_unmapped() { rec.mapq } else { None };
+                (flags, tid2, pos2, mapq, false, tid2, pos2.unwrap_or(1), 0)
+            }
+
+            // Read 1 placed, read 2 unplaced.
+            AlignmentTag::UN => (
+                base | maybe(Flags::REVERSE_COMPLEMENTED, minus1) | Flags::MATE_UNMAPPED,
+                tid1, pos1, rec.mapq, flip1, tid1, pos1.unwrap_or(1), 0,
+            ),
+            AlignmentTag::MN => (
+                base | Flags::SECONDARY
+                    | maybe(Flags::REVERSE_COMPLEMENTED, minus1)
+                    | Flags::MATE_UNMAPPED,
+                tid1, pos1, None, flip1, tid1, pos1.unwrap_or(1), 0,
+            ),
+
+            // Both ends placed. The only difference between the four is
+            // whether read 1 and/or read 2 mapped to several places.
+            AlignmentTag::UU | AlignmentTag::UM | AlignmentTag::MU | AlignmentTag::MM => {
+                let mut flags = base
+                    | maybe(Flags::REVERSE_COMPLEMENTED, minus1)
+                    | maybe(Flags::MATE_REVERSE_COMPLEMENTED, minus2);
+                if multiple1 {
+                    flags |= Flags::SECONDARY;
+                }
+                if tag == AlignmentTag::UM {
+                    flags |= Flags::SECONDARY;
+                }
+
+                let (mapq, template_length) = if tag == AlignmentTag::UU {
+                    let start = pos1.unwrap_or(1) as i64;
+                    let next = pos2.unwrap_or(1) as i64;
+                    let tlen = (start - next).abs()
+                        + CigarReconstructor::reference_length(&rec.cigar) as i64;
+                    let opposite = seg1.map(|s| s.target.strand)
+                        != seg2.map(|s| s.target.strand);
+                    if opposite
+                        && tlen as f64 <= is.mean + is.fold * is.stdev
+                        && tlen as f64 >= is.mean - is.fold * is.stdev
+                    {
+                        flags |= Flags::PROPERLY_SEGMENTED;
+                    }
+                    (rec.mapq, tlen as i32)
+                } else {
+                    // A read that mapped to several places has no usable
+                    // mapping quality of its own.
+                    (if multiple1 { None } else { rec.mapq }, 0)
+                };
+
+                (flags, tid1, pos1, mapq, flip1, tid2, pos2.unwrap_or(1), template_length)
+            }
+
+            AlignmentTag::QF
+            | AlignmentTag::SN
+            | AlignmentTag::SM
+            | AlignmentTag::SU => unreachable!("only the paired categories reach here"),
+        };
+
+    let spec = OutSpec {
+        flags,
+        tid,
+        pos,
+        mapq,
+        cigar: rec.cigar.clone(),
+        reverse_complement,
+        mate_tid,
+        mate_pos,
+        template_length,
+    };
+    (spec, tag)
+}
+
 
 /// PLACEHOLDER_MAIN
-
-/// Build the placeholder record CrossMap writes for a read it could not place.
-///
-/// The read keeps its name, bases and qualities, but loses its reference,
-/// position, CIGAR and template length. Leaving the mapping quality unset is
-/// how 255 ("unavailable") is written.
-///
-/// `flags` is the caller's choice: CrossMap resets the flags to a bare
-/// `FLAG_UNMAPPED` for a read that failed to lift over, but ORs it into the
-/// incoming flags for a read that was already unmapped.
-fn unmapped_placeholder(name: &[u8], seq: &[u8], qual: &[u8], flags: Flags) -> RecordBuf {
-    RecordBuf::builder()
-        .set_name(name)
-        .set_flags(flags)
-        .set_sequence(record_buf::Sequence::from(seq))
-        .set_quality_scores(record_buf::QualityScores::from(qual.to_vec()))
-        .build()
-}
-
-/// The placeholder for a record that was already flagged unmapped on input,
-/// built straight from the input `bam::Record`.
-fn already_unmapped_bam_placeholder(record: &bam::Record) -> RecordBuf {
-    unmapped_placeholder(
-        record.name().map(|n| &**n).unwrap_or(&b"*"[..]),
-        &seq_bytes_from_record(record),
-        &qual_bytes_from_record(record),
-        record.flags() | Flags::UNMAPPED,
-    )
-}
-
-/// The placeholder for a record that could not be converted, built straight
-/// from the input `bam::Record`.
-fn failed_bam_placeholder(record: &bam::Record) -> RecordBuf {
-    unmapped_placeholder(
-        record.name().map(|n| &**n).unwrap_or(&b"*"[..]),
-        &seq_bytes_from_record(record),
-        &qual_bytes_from_record(record),
-        Flags::UNMAPPED,
-    )
-}
 
 /// Convert a BAM/SAM file
 pub fn convert_bam<P: AsRef<Path>>(
@@ -594,25 +1083,28 @@ fn finish_bam_writer(writer: BamWriter) -> Result<(), BamError> {
 /// How a converted alignment record is counted in the statistics.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum BamClass {
-    /// The record mapped.
+    /// The record was placed at a reference position.
     #[default]
     Mapped,
-    /// The record was already flagged unmapped on input.
+    /// The record was already flagged unmapped on input and stayed that way.
     Unmapped,
-    /// The record could not be mapped and was replaced (BAM) or dropped (SAM).
+    /// The record was mapped on input but could not be lifted over.
     Failed,
 }
 
 /// One converted alignment record.
 #[derive(Default)]
 struct BamOut {
-    /// The record to emit, or `None` to drop it. The SAM path drops records
-    /// whose coordinates could not be resolved; the BAM path always emits one.
-    record: Option<RecordBuf>,
+    /// The record to emit. Every input record produces exactly one: a read
+    /// that cannot be placed is written out with no reference, as CrossMap
+    /// writes it.
+    record: RecordBuf,
     /// How to count the record.
     class: BamClass,
     /// Whether the input record was part of a segment pair.
     segmented: bool,
+    /// Which CrossMap category the record fell into, for the statistics.
+    tag: Option<AlignmentTag>,
 }
 
 /// Number of alignment records converted as one unit.
@@ -642,9 +1134,10 @@ fn write_bam_out<W: sam::alignment::io::Write>(
         BamClass::Unmapped => stats.unmapped += 1,
         BamClass::Failed => stats.failed += 1,
     }
-    if let Some(record) = &out.record {
-        writer.write_alignment_record(output_header, record)?;
+    if let Some(tag) = out.tag {
+        stats.count(tag);
     }
+    writer.write_alignment_record(output_header, &out.record)?;
     Ok(())
 }
 
@@ -665,28 +1158,19 @@ fn process_bam_records<R: io::Read + Send, W: sam::alignment::io::Write>(
 
     use crate::core::pipeline::{run_ordered_pipeline, ItemBatch};
 
+    let is = InsertSizeParams::default();
+
     run_ordered_pipeline::<ItemBatch<bam::Record>, BamOut, _, _, _>(
         threads,
         |record: &bam::Record, out: &mut BamOut| {
-            let flags = record.flags();
-            out.segmented = flags.is_segmented();
-            if flags.is_unmapped() {
-                out.class = BamClass::Unmapped;
-                out.record = Some(already_unmapped_bam_placeholder(record));
-                return false;
-            }
-            match convert_record(record, input_header, output_header, mapper) {
-                Some((new_record, _tag)) => {
-                    out.class = BamClass::Mapped;
-                    out.record = Some(new_record);
-                    true
-                }
-                None => {
-                    out.class = BamClass::Failed;
-                    out.record = Some(failed_bam_placeholder(record));
-                    false
-                }
-            }
+            let decoded = decode_bam_record(record, input_header);
+            let (class, converted, tag) =
+                convert_decoded(&decoded, output_header, mapper, &is);
+            out.segmented = decoded.flags.is_segmented();
+            out.class = class;
+            out.tag = Some(tag);
+            out.record = converted;
+            class == BamClass::Mapped
         },
         |batch: &mut ItemBatch<bam::Record>| {
             let batch_size = bam_batch_size();
@@ -718,30 +1202,24 @@ fn process_bam_records_sequential<R: io::Read>(
     writer: &mut impl sam::alignment::io::Write,
     stats: &mut ConversionStats,
 ) -> Result<(), BamError> {
+    let is = InsertSizeParams::default();
+
     for result in reader.records() {
         let record = result?;
-        stats.total += 1;
-        let flags = record.flags();
-        if flags.is_segmented() { stats.paired += 1; } else { stats.single += 1; }
+        let decoded = decode_bam_record(&record, input_header);
+        let (class, converted, tag) = convert_decoded(&decoded, output_header, mapper, &is);
 
-        if flags.is_unmapped() {
-            stats.unmapped += 1;
-            let new_record = already_unmapped_bam_placeholder(&record);
-            writer.write_alignment_record(output_header, &new_record)?;
-            continue;
-        }
-
-        match convert_record(&record, input_header, output_header, mapper) {
-            Some((new_record, _tag)) => {
-                writer.write_alignment_record(output_header, &new_record)?;
-                stats.mapped += 1;
-            }
-            None => {
-                stats.failed += 1;
-                let new_record = failed_bam_placeholder(&record);
-                writer.write_alignment_record(output_header, &new_record)?;
-            }
-        }
+        write_bam_out(
+            &BamOut {
+                record: converted,
+                class,
+                segmented: decoded.flags.is_segmented(),
+                tag: Some(tag),
+            },
+            output_header,
+            writer,
+            stats,
+        )?;
     }
     Ok(())
 }
@@ -763,43 +1241,19 @@ fn process_sam_records<R: io::BufRead + Send, W: sam::alignment::io::Write>(
 
     use crate::core::pipeline::{run_ordered_pipeline, ItemBatch};
 
+    let is = InsertSizeParams::default();
+
     run_ordered_pipeline::<ItemBatch<RecordBuf>, BamOut, _, _, _>(
         threads,
         |record_buf: &RecordBuf, out: &mut BamOut| {
-            let flags = record_buf.flags();
-            out.segmented = flags.is_segmented();
-
-            // A record already flagged unmapped is passed through untouched.
-            if flags.is_unmapped() {
-                out.class = BamClass::Unmapped;
-                out.record = Some(unmapped_placeholder(
-                    record_buf.name().map(|n| &**n).unwrap_or(&b"*"[..]),
-                    record_buf.sequence().as_ref(),
-                    record_buf.quality_scores().as_ref(),
-                    flags | Flags::UNMAPPED,
-                ));
-                return false;
-            }
-
-            match convert_sam_record(record_buf, input_header, output_header, mapper) {
-                Some(record) => {
-                    out.class = BamClass::Mapped;
-                    out.record = Some(record);
-                    true
-                }
-                None => {
-                    // CrossMap keeps a read that failed to lift over, as an
-                    // unmapped record with the original bases.
-                    out.class = BamClass::Failed;
-                    out.record = Some(unmapped_placeholder(
-                        record_buf.name().map(|n| &**n).unwrap_or(&b"*"[..]),
-                        record_buf.sequence().as_ref(),
-                        record_buf.quality_scores().as_ref(),
-                        Flags::UNMAPPED,
-                    ));
-                    false
-                }
-            }
+            let decoded = decode_sam_record(record_buf, input_header);
+            let (class, converted, tag) =
+                convert_decoded(&decoded, output_header, mapper, &is);
+            out.segmented = decoded.flags.is_segmented();
+            out.class = class;
+            out.tag = Some(tag);
+            out.record = converted;
+            class == BamClass::Mapped
         },
         |batch: &mut ItemBatch<RecordBuf>| {
             let batch_size = bam_batch_size();
@@ -823,71 +1277,6 @@ fn process_sam_records<R: io::BufRead + Send, W: sam::alignment::io::Write>(
     Ok(())
 }
 
-/// Convert one SAM record buffer, returning `None` if it cannot be placed.
-///
-/// This mirrors the body of the sequential loop: every early `continue` in it
-/// (missing reference id/name/start, empty mapping, unknown target) becomes a
-/// `None` here.
-fn convert_sam_record(
-    record_buf: &RecordBuf,
-    input_header: &sam::Header,
-    output_header: &sam::Header,
-    mapper: &CoordinateMapper,
-) -> Option<RecordBuf> {
-    let flags = record_buf.flags();
-    let tid = record_buf.reference_sequence_id()?;
-    let chrom = get_chrom_name(input_header, tid)?;
-    let start_pos = record_buf.alignment_start()?.get() as u64 - 1;
-
-    let cigar_ops: Vec<CigarOp> = record_buf.cigar().as_ref().iter().map(|op| CigarOp::from_noodles(*op)).collect();
-    let ref_len = CigarReconstructor::reference_length(&cigar_ops) as u64;
-    let end = start_pos + ref_len;
-
-    let query_strand = if flags.is_reverse_complemented() { Strand::Minus } else { Strand::Plus };
-
-    let segments = mapper.map(&chrom, start_pos, end, query_strand)?;
-    if segments.is_empty() { return None; }
-
-    let is_multiple = segments.len() > 1;
-    let seg = &segments[0];
-    let target_tid = get_tid(output_header, &seg.target.chrom)?;
-
-    let target_strand = seg.target.strand;
-    let need_revcomp = target_strand == Strand::Minus && query_strand == Strand::Plus
-        || target_strand == Strand::Plus && query_strand == Strand::Minus;
-
-    let seq_vec: Vec<u8> = record_buf.sequence().as_ref().to_vec();
-    let qual_vec: Vec<u8> = record_buf.quality_scores().as_ref().to_vec();
-
-    let (new_seq, new_qual, new_cigar) = if need_revcomp {
-        (revcomp_seq(&seq_vec), reverse_qual(&qual_vec), CigarReconstructor::reverse(&cigar_ops))
-    } else {
-        (seq_vec, qual_vec, cigar_ops)
-    };
-
-    let noodles_cigar = ops_to_noodles_cigar(&new_cigar);
-    let pos = Position::try_from((seg.target.start + 1) as usize).ok()?;
-
-    let mut new_flags = flags;
-    if need_revcomp { new_flags ^= Flags::REVERSE_COMPLEMENTED; }
-    if is_multiple { new_flags |= Flags::SECONDARY; }
-
-    let mut builder = RecordBuf::builder()
-        .set_name(record_buf.name().unwrap_or(b"*".into()))
-        .set_flags(new_flags)
-        .set_reference_sequence_id(target_tid)
-        .set_alignment_start(pos)
-        .set_cigar(noodles_cigar)
-        .set_template_length(0)
-        .set_sequence(record_buf::Sequence::from(new_seq.as_slice()))
-        .set_quality_scores(record_buf::QualityScores::from(new_qual))
-        .set_data(record_buf.data().clone());
-    if let Some(mq) = record_buf.mapping_quality() {
-        builder = builder.set_mapping_quality(mq);
-    }
-    Some(builder.build())
-}
-
 fn process_sam_records_sequential<R: io::BufRead>(
 
     reader: &mut sam::io::Reader<R>,
@@ -897,38 +1286,24 @@ fn process_sam_records_sequential<R: io::BufRead>(
     writer: &mut impl sam::alignment::io::Write,
     stats: &mut ConversionStats,
 ) -> Result<(), BamError> {
+    let is = InsertSizeParams::default();
+
     for result in reader.record_bufs(input_header) {
         let record_buf = result?;
-        stats.total += 1;
-        let flags = record_buf.flags();
-        if flags.is_segmented() { stats.paired += 1; } else { stats.single += 1; }
+        let decoded = decode_sam_record(&record_buf, input_header);
+        let (class, converted, tag) = convert_decoded(&decoded, output_header, mapper, &is);
 
-        // A read keeps its name, bases and qualities whether it was already
-        // unmapped or could not be lifted over; only the flags differ.
-        let name = record_buf.name().map(|n| &**n).unwrap_or(&b"*"[..]);
-        let seq = record_buf.sequence().as_ref();
-        let qual = record_buf.quality_scores().as_ref();
-
-        if flags.is_unmapped() {
-            stats.unmapped += 1;
-            let new_record = unmapped_placeholder(name, seq, qual, flags | Flags::UNMAPPED);
-            writer.write_alignment_record(output_header, &new_record)?;
-            continue;
-        }
-
-        match convert_sam_record(&record_buf, input_header, output_header, mapper) {
-            Some(new_record) => {
-                writer.write_alignment_record(output_header, &new_record)?;
-                stats.mapped += 1;
-            }
-            None => {
-                // CrossMap keeps a read that failed to lift over, as an
-                // unmapped record carrying the original bases.
-                stats.failed += 1;
-                let new_record = unmapped_placeholder(name, seq, qual, Flags::UNMAPPED);
-                writer.write_alignment_record(output_header, &new_record)?;
-            }
-        }
+        write_bam_out(
+            &BamOut {
+                record: converted,
+                class,
+                segmented: decoded.flags.is_segmented(),
+                tag: Some(tag),
+            },
+            output_header,
+            writer,
+            stats,
+        )?;
     }
     Ok(())
 }
@@ -938,6 +1313,60 @@ fn process_sam_records_sequential<R: io::BufRead>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every shape of `(read1, read2)` mapping must land in its own category:
+    /// unmapped (`None`), uniquely mapped (`Some(false)`), or mapped several
+    /// places (`Some(true)`).
+    #[test]
+    fn test_paired_category_dispatch() {
+        use AlignmentTag::*;
+        assert_eq!(paired_category(None, None), NN);
+        assert_eq!(paired_category(None, Some(false)), NU);
+        assert_eq!(paired_category(None, Some(true)), NM);
+        assert_eq!(paired_category(Some(false), None), UN);
+        assert_eq!(paired_category(Some(true), None), MN);
+        assert_eq!(paired_category(Some(false), Some(false)), UU);
+        assert_eq!(paired_category(Some(false), Some(true)), UM);
+        assert_eq!(paired_category(Some(true), Some(false)), MU);
+        assert_eq!(paired_category(Some(true), Some(true)), MM);
+    }
+
+    #[test]
+    fn test_crossmap_tags_promotes_char_and_moves_read_group_last() {
+        let tag = |a: u8, b: u8| SamTag::new(a, b);
+        let data: record_buf::Data = [
+            (tag(b'X', b'T'), BufValue::Character(b'M')),
+            (SamTag::READ_GROUP, BufValue::String(vec![b'G'].into())),
+            (tag(b'N', b'M'), BufValue::Int32(8)),
+            (tag(b'Z', b'C'), BufValue::String(vec![b'X'].into())),
+        ]
+        .into_iter()
+        .collect();
+
+        let got: Vec<_> = crossmap_tags(&data)
+            .iter()
+            .map(|(t, v)| (t, v.clone()))
+            .collect();
+
+        // Same order as the input, minus RG, which is appended last.
+        assert_eq!(got[0], (tag(b'X', b'T'), BufValue::String(vec![b'M'].into())));
+        assert_eq!(got[1], (tag(b'N', b'M'), BufValue::Int32(8)));
+        // A one-character string field is left alone.
+        assert_eq!(got[2], (tag(b'Z', b'C'), BufValue::String(vec![b'X'].into())));
+        assert_eq!(got[3], (SamTag::READ_GROUP, BufValue::String(vec![b'G'].into())));
+        assert_eq!(got.len(), 4);
+    }
+
+    #[test]
+    fn test_crossmap_tags_without_read_group() {
+        let tag = |a: u8, b: u8| SamTag::new(a, b);
+        let data: record_buf::Data = [(tag(b'N', b'M'), BufValue::Int32(1))]
+            .into_iter()
+            .collect();
+
+        let got: Vec<_> = crossmap_tags(&data).iter().map(|(t, _)| t).collect();
+        assert_eq!(got, vec![tag(b'N', b'M')]);
+    }
 
     #[test]
     fn test_cigar_op_from_noodles() {
