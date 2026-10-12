@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-06_plot_memory.py - Generate memory efficiency comparison figure (Figure 2)
+fig2_memory.py - Generate memory efficiency comparison figure (Figure 2)
 
 Figure 2 layout (1x2):
   Left: Memory usage curves - showing memory changes over time for three tools
@@ -11,7 +11,7 @@ Design rationale:
 - Right plot shows direct peak memory comparison for quantitative comparison
 - Uses color scheme consistent with Figure 1
 
-Usage: python paper/06_plot_memory.py
+Usage: python paper/plot/fig2_memory.py
 Output: paper/figures/fig2_memory.pdf
 """
 

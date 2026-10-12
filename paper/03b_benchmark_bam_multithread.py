@@ -242,7 +242,7 @@ def main():
     
     print(f"\nResults saved to: {output_file}")
     cleanup_outputs(*RESULTS_DIR.glob('fastcrossmap_bam_mt*_output.*'))
-    print("\nNext step: python paper/04_plot_performance.py")
+    print("\nNext step: python paper/plot/fig1_performance.py")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-12
+
+### Added
+- `-t` / `--threads` for the `maf` and `bigwig` subcommands, so every format
+  can now be parallelised from the CLI
+- `-t 0` now means "use every available core" on all subcommands, instead of
+  being rejected as an invalid thread count
+
+### Changed
+- MAF: records are parsed and mapped in parallel batches and then flushed in
+  input order, so the bytes written are identical to the single-threaded run
+- Wiggle / BigWig: the parallel batch size is raised to 262,144 records, which
+  removes the slowdown at `-t 2` where a worker pool was woken for every small
+  batch; the pool construction is now shared with the other format pipelines
 ## [0.6.0] - 2026-10-11
 
 ### Added

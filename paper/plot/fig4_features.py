@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-10_plot_features.py - Generate feature comparison heatmap (Figure 4)
+fig4_features.py - Generate feature comparison heatmap (Figure 4)
 
 Figure 4 design:
   Heatmap showing feature support for each tool
@@ -13,7 +13,7 @@ Design rationale:
 - Highlight FastCrossMap's comprehensiveness
 - Easy to identify strengths and weaknesses of each tool
 
-Usage: python paper/10_plot_features.py
+Usage: python paper/plot/fig4_features.py
 Output: paper/figures/fig4_features.pdf
 """
 
@@ -266,7 +266,7 @@ def main():
     print("  Green(✓) = supported, Red(✗) = not supported")
     print("  Grouped by category: File Formats, Compression, Threading, Platforms, Other")
     print("  FastCrossMap has the most comprehensive support (8/8 formats, 3/3 platforms)")
-    print("\nNext step: python paper/11_plot_radar.py")
+    print("\nNext step: python paper/plot/fig5_radar.py")
 
 
 if __name__ == "__main__":

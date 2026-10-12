@@ -495,6 +495,60 @@ impl Drop for PointSpool {
     }
 }
 
+/// Map one batch of Wiggle/BigWig points and spool them, preserving input order.
+///
+/// The mapping (`convert_wig_point`, the chain lookup) runs across the pool, but
+/// the two spool appends below run here, in the batch's original order — so the
+/// scratch file's contents do not depend on the thread count. `pool` is `None`
+/// for a single-threaded run and the mapping then runs inline; the result is the
+/// same bytes either way.
+fn flush_wig_batch(
+    batch: &mut Vec<WigDataPoint>,
+    mapper: &CoordinateMapper,
+    pool: Option<&rayon::ThreadPool>,
+    spool: &mut PointSpool,
+    unmap_spool: &mut PointSpool,
+    mapped_count: &mut usize,
+    stats: &mut ConversionStats,
+) -> Result<(), std::io::Error> {
+    use rayon::prelude::*;
+
+    if batch.is_empty() {
+        return Ok(());
+    }
+
+    let converted: Vec<Option<BedGraphRecord>> = match pool {
+        Some(pool) => pool.install(|| {
+            batch
+                .par_iter()
+                .map(|point| convert_wig_point(point, mapper))
+                .collect()
+        }),
+        None => batch.iter().map(|point| convert_wig_point(point, mapper)).collect(),
+    };
+
+    for (point, mapped) in batch.drain(..).zip(converted) {
+        match mapped {
+            Some(converted) => {
+                spool.push(
+                    &converted.chrom,
+                    converted.start,
+                    converted.end,
+                    converted.value,
+                )?;
+                *mapped_count += 1;
+                stats.success += 1;
+            }
+            None => {
+                unmap_spool.push(&point.chrom, point.start, point.end, point.value)?;
+                stats.failed += 1;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Convert a Wiggle file to Wiggle format (variableStep)
 ///
 /// Records are spooled to a scratch file as they are read, then replayed one
@@ -505,6 +559,7 @@ impl Drop for PointSpool {
 /// * `input` - Input Wiggle file path
 /// * `output_prefix` - Output file prefix (will create .wig file)
 /// * `mapper` - Coordinate mapper
+/// * `threads` - Number of threads for parallel mapping (1 = sequential)
 ///
 /// # Returns
 /// Conversion statistics
@@ -512,6 +567,7 @@ pub fn convert_wig<P: AsRef<Path>>(
     input: P,
     output_prefix: P,
     mapper: &CoordinateMapper,
+    threads: usize,
 ) -> Result<ConversionStats, std::io::Error> {
     let input_file = std::fs::File::open(input.as_ref())?;
     let reader = BufReader::with_capacity(128 * 1024, input_file);
@@ -531,20 +587,30 @@ pub fn convert_wig<P: AsRef<Path>>(
     let mut unmap_spool = PointSpool::create(&unmapped_spool_path)?;
 
     // Phase 1: parse and map, spooling each record under its output chromosome.
+    //
+    // Only the per-record mapping runs across the pool. Parsing and the spool
+    // append stay on this thread and in input order, so the spool holds exactly
+    // the bytes it would single-threaded and phase 2 writes an identical file.
+    let pool = crate::core::pipeline::build_pool(threads);
+    let batch_size = crate::core::pipeline::batch_size_wig();
     let wig_reader = WigReader::new(reader);
+    let mut batch: Vec<WigDataPoint> = Vec::with_capacity(batch_size);
 
     for result in wig_reader {
         match result {
             Ok(point) => {
                 stats.total += 1;
-
-                if let Some(converted) = convert_wig_point(&point, mapper) {
-                    spool.push(&converted.chrom, converted.start, converted.end, converted.value)?;
-                    mapped_count += 1;
-                    stats.success += 1;
-                } else {
-                    unmap_spool.push(&point.chrom, point.start, point.end, point.value)?;
-                    stats.failed += 1;
+                batch.push(point);
+                if batch.len() >= batch_size {
+                    flush_wig_batch(
+                        &mut batch,
+                        mapper,
+                        pool.as_ref(),
+                        &mut spool,
+                        &mut unmap_spool,
+                        &mut mapped_count,
+                        &mut stats,
+                    )?;
                 }
             }
             Err(e) => {
@@ -553,6 +619,15 @@ pub fn convert_wig<P: AsRef<Path>>(
             }
         }
     }
+    flush_wig_batch(
+        &mut batch,
+        mapper,
+        pool.as_ref(),
+        &mut spool,
+        &mut unmap_spool,
+        &mut mapped_count,
+        &mut stats,
+    )?;
 
     // Phase 2: replay one chromosome at a time — merge, write, release.
     let mut merged_total = 0usize;
@@ -782,6 +857,72 @@ pub mod bigwig {
         Ok(())
     }
     
+    /// Map one batch of BigWig intervals and spool them, preserving input order.
+    ///
+    /// The mapping runs across the pool; the spool append and the `.unmap.bedGraph`
+    /// write below stay on this thread and in the batch's original order, so both
+    /// outputs are identical regardless of thread count. The unmap file is created
+    /// lazily, on the first unmapped record, exactly as the single-threaded path
+    /// does. `pool` is `None` for a single-threaded run.
+    #[allow(clippy::too_many_arguments)]
+    fn flush_bigwig_batch(
+        batch: &mut Vec<WigDataPoint>,
+        mapper: &CoordinateMapper,
+        pool: Option<&rayon::ThreadPool>,
+        spool: &mut PointSpool,
+        unmap_file: &mut Option<BufWriter<std::fs::File>>,
+        unmap_path: &str,
+        mapped_count: &mut usize,
+        stats: &mut ConversionStats,
+    ) -> Result<(), std::io::Error> {
+        use rayon::prelude::*;
+
+        if batch.is_empty() {
+            return Ok(());
+        }
+
+        let converted: Vec<Option<BedGraphRecord>> = match pool {
+            Some(pool) => pool.install(|| {
+                batch
+                    .par_iter()
+                    .map(|point| convert_wig_point(point, mapper))
+                    .collect()
+            }),
+            None => batch.iter().map(|point| convert_wig_point(point, mapper)).collect(),
+        };
+
+        for (point, mapped) in batch.drain(..).zip(converted) {
+            match mapped {
+                Some(converted) => {
+                    spool.push(
+                        &converted.chrom,
+                        converted.start,
+                        converted.end,
+                        converted.value,
+                    )?;
+                    *mapped_count += 1;
+                    stats.success += 1;
+                }
+                None => {
+                    if unmap_file.is_none() {
+                        let file = std::fs::File::create(unmap_path)?;
+                        *unmap_file = Some(BufWriter::with_capacity(64 * 1024, file));
+                    }
+                    if let Some(writer) = unmap_file.as_mut() {
+                        writeln!(
+                            writer,
+                            "{}\t{}\t{}\t{}",
+                            point.chrom, point.start, point.end, point.value
+                        )?;
+                    }
+                    stats.failed += 1;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Convert a BigWig file to BigWig format
     ///
     /// Intervals are spooled as they are read and merged one chromosome at a
@@ -792,6 +933,7 @@ pub mod bigwig {
     /// * `input` - Input BigWig file path
     /// * `output_prefix` - Output file prefix (will create .bw file)
     /// * `mapper` - Coordinate mapper
+    /// * `threads` - Number of threads for parallel mapping (1 = sequential)
     ///
     /// # Returns
     /// Conversion statistics
@@ -799,6 +941,7 @@ pub mod bigwig {
         input: P,
         output_prefix: P,
         mapper: &CoordinateMapper,
+        threads: usize,
     ) -> Result<ConversionStats, std::io::Error> {
         let unmap_path = format!("{}.unmap.bedGraph", output_prefix.as_ref().display());
         let spool_path = format!("{}.tmp.mapped", output_prefix.as_ref().display());
@@ -812,35 +955,49 @@ pub mod bigwig {
         // by chromosome and therefore spools it — different output, different order.)
         let mut unmap_file: Option<BufWriter<std::fs::File>> = None;
 
+        // As in convert_wig, only the mapping runs across the pool; the interval
+        // reader and both output streams stay on this thread in input order, so
+        // the spool and the `.unmap.bedGraph` are byte-for-byte thread-count
+        // independent.
+        let pool = crate::core::pipeline::build_pool(threads);
+        let batch_size = crate::core::pipeline::batch_size_wig();
+        let mut batch: Vec<WigDataPoint> = Vec::with_capacity(batch_size);
+
         for_each_bigwig_interval(&input, |chrom, start, end, value| {
-            let point = WigDataPoint {
+            stats.total += 1;
+            batch.push(WigDataPoint {
                 chrom: chrom.to_string(),
                 start,
                 end,
                 value,
-            };
-            stats.total += 1;
-
-            if let Some(converted) = convert_wig_point(&point, mapper) {
-                spool
-                    .push(&converted.chrom, converted.start, converted.end, converted.value)
-                    .map_err(|e| WigParseError::IoError(e.to_string()))?;
-                mapped_count += 1;
-                stats.success += 1;
-            } else {
-                if unmap_file.is_none() {
-                    let file = std::fs::File::create(&unmap_path)
-                        .map_err(|e| WigParseError::IoError(e.to_string()))?;
-                    unmap_file = Some(BufWriter::with_capacity(64 * 1024, file));
-                }
-                if let Some(writer) = unmap_file.as_mut() {
-                    writeln!(writer, "{}\t{}\t{}\t{}", point.chrom, point.start, point.end, point.value)
-                        .map_err(|e| WigParseError::IoError(e.to_string()))?;
-                }
-                stats.failed += 1;
+            });
+            if batch.len() >= batch_size {
+                flush_bigwig_batch(
+                    &mut batch,
+                    mapper,
+                    pool.as_ref(),
+                    &mut spool,
+                    &mut unmap_file,
+                    &unmap_path,
+                    &mut mapped_count,
+                    &mut stats,
+                )
+                .map_err(|e| WigParseError::IoError(e.to_string()))?;
             }
             Ok(())
         })
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+
+        flush_bigwig_batch(
+            &mut batch,
+            mapper,
+            pool.as_ref(),
+            &mut spool,
+            &mut unmap_file,
+            &unmap_path,
+            &mut mapped_count,
+            &mut stats,
+        )
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
         if let Some(mut writer) = unmap_file {

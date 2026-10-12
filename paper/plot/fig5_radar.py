@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-11_plot_radar.py - Generate comprehensive evaluation radar chart (Figure 5)
+fig5_radar.py - Generate comprehensive evaluation radar chart (Figure 5)
 
 Figure 5 design:
   Radar chart showing comprehensive performance across 5 dimensions
@@ -15,7 +15,7 @@ Methodology:
 - Calculate normalized scores (0-1) for 5 dimensions
 - Plot radar chart comparing 4 tools
 
-Usage: python paper/11_plot_radar.py
+Usage: python paper/plot/fig5_radar.py
 Output: paper/figures/fig5_radar.pdf
 """
 

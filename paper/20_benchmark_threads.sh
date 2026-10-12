@@ -12,15 +12,26 @@
 #   OUT       输出目录                    (默认: paper/results/threads-<时间戳>)
 #   THREADS   要测的线程数, 空格分隔       (默认: "1 2 4 8 16")
 #   REPS      每个 (format,threads) 重复次数 (默认: 5)
-#   FORMATS   只跑其中几个, 空格分隔       (默认: "bed vcf gff gvcf bam sam" = 全部)
+#   FORMATS   只跑其中几个, 空格分隔       (默认: 8 种格式全跑, 见下)
 #   WARM      热身次数 (不计时)            (默认: 1)
 #   SYNC      1 = 每次计时前后都 sync      (默认: 1, 见下, 强烈建议保持)
 #   KEEP      1 = 保留输出文件             (默认: 0, 跑完即删, 省磁盘)
 #
+#   WIG_IN      Wiggle 输入                (默认: $DATA/wig_gm12878_h3k27ac.wig)
+#   BIGWIG_IN   BigWig 输入                (默认: $DATA/bigwig_gm12878_h3k27ac.bigWig)
+#   MAF_IN      MAF 输入                   (默认: $DATA/maf_synthetic_large.maf)
+#   MAF_BUILD   MAF 的目标 build (-b 参数)  (默认: GRCh38)
+#
+# 运行时长提示: 默认 FORMATS 覆盖 8 种格式, 一次跑完通常要数小时 —— WIG/BigWig 的真实
+#   输入是 1-2 GB, MAF 每条记录都要去参考基因组取 REF 碱基。只想验某几种就:
+#     FORMATS="wig bigwig maf" bash paper/20_benchmark_threads.sh
+#   只想采样一两个线程数就:
+#     THREADS="1 4" REPS=3 FORMATS="maf" bash paper/20_benchmark_threads.sh
+#
 # 输出:
 #   $OUT/timings.tsv   原始耗时  (format, threads, rep, wall_s, user_s, sys_s, max_rss_kb, flush_s, ok)
 #   $OUT/summary.tsv   汇总表    (median/min/max/spread + 加速比 + 并行效率 + 可靠性标记)
-#   $OUT/sha256.txt    各线程输出哈希, 用于一致性抽查
+#   $OUT/sha256.txt    各线程输出哈希 (format / t / 产物文件名 / sha256), 用于一致性抽查
 #   $OUT/env.txt       运行环境 (nproc / 版本 / 内核 / 挂载 / dirty_ratio)
 #
 # ============================ 测量方法 ============================
@@ -89,6 +100,9 @@
 #
 # ============================ 数据说明 ============================
 #   只有 VCF/GVCF 支持 .gz 输入; BED/GFF 需要明文, 脚本会自动解压到 $CACHE (只解一次)。
+#   Wiggle 没有压缩变体, BigWig 本身就是二进制容器, 两者都直接读原文;
+#   MAF 额外需要参考基因组 ($REF) 和 -b 目标 build (MAF_BUILD)。
+#   WIG 的明文输出也可能接近 1 GB, 但峰值磁盘仍是「单个最大产物」。
 #   **输出目录请放本地盘**: 未压缩的 GFF/VCF 输出有 1-11 GB, 写到 NFS/9p 挂载上会让
 #   wall 时间完全被网络 I/O 支配, 线程数怎么调都看不出来。
 #   本地盘至少留 20 GB (脚本会预检并告警)。
@@ -101,7 +115,7 @@ CACHE="${CACHE:-$DATA/decompressed}"
 OUT="${OUT:-paper/results/threads-$(date +%Y%m%d-%H%M%S)}"
 THREADS="${THREADS:-1 2 4 8 16}"
 REPS="${REPS:-5}"
-FORMATS="${FORMATS:-bed vcf gff gvcf bam sam}"
+FORMATS="${FORMATS:-bed vcf gff gvcf bam sam wig bigwig maf}"
 WARM="${WARM:-1}"
 SYNC="${SYNC:-1}"
 KEEP="${KEEP:-0}"
@@ -117,6 +131,11 @@ GFF_IN="$DATA/gff_gencode_v44_basic_grch37.gff3.gz"      # 46 MB, 需解压
 GVCF_IN="${GVCF_IN:-$DATA/gvcf_sample.gvcf}"             # paper/data 无, 默认跳过
 BAM_IN="$DATA/bam_na12878_chr20.bam"                     # 312 MB
 SAM_IN="$DATA/sam_na12878_chr20.sam"                     # 1.45 GB
+# 后三种格式的输入。都可以用环境变量换成别的数据集 (见文件头)。
+WIG_IN="${WIG_IN:-$DATA/wig_gm12878_h3k27ac.wig}"              # 1.24 GB 明文
+BIGWIG_IN="${BIGWIG_IN:-$DATA/bigwig_gm12878_h3k27ac.bigWig}"  # 262 MB 二进制
+MAF_IN="${MAF_IN:-$DATA/maf_synthetic_large.maf}"              # 48 MB, 需参考基因组
+MAF_BUILD="${MAF_BUILD:-GRCh38}"                               # MAF 的 -b 目标 build
 
 mkdir -p "$OUT" "$CACHE"
 
@@ -194,29 +213,58 @@ if want sam; then
     if [ -f "$SAM_IN" ]; then add_job sam bam "$CHAIN" "$SAM_IN" "$OUT/sam.out.sam"
     else SKIP_REASON[sam]="无输入"; fi
 fi
+# 后三种: 输出是「前缀」而不是完整文件名 —— wig 写 <前缀>.wig, bigwig 写 <前缀>.bw,
+# 所以这里的最后一项只是前缀 (真实路径由下面的 artifacts_of 补全)。
+# MAF 的输出路径按原样使用, 多一个 -b 目标 build。
+if want wig; then
+    if [ -f "$WIG_IN" ]; then add_job wig wig "$CHAIN" "$WIG_IN" "$OUT/wig.out"
+    else SKIP_REASON[wig]="无输入 ($WIG_IN)"; fi
+fi
+if want bigwig; then
+    if [ -f "$BIGWIG_IN" ]; then add_job bigwig bigwig "$CHAIN" "$BIGWIG_IN" "$OUT/bigwig.out"
+    else SKIP_REASON[bigwig]="无输入 ($BIGWIG_IN)"; fi
+fi
+if want maf; then
+    if   [ ! -f "$MAF_IN" ]; then SKIP_REASON[maf]="无输入 ($MAF_IN)"
+    elif [ ! -f "$REF" ];    then SKIP_REASON[maf]="缺参考基因组 $REF"
+    else add_job maf maf -b "$MAF_BUILD" "$CHAIN" "$MAF_IN" "$REF" "$OUT/maf.out.maf"
+    fi
+fi
 
 if [ "${#JOB[@]}" -eq 0 ]; then
     echo "ERROR: 没有可跑的格式 (检查 FORMATS 和 $DATA 下的输入文件)" >&2
     exit 1
 fi
 
-# 取某格式的输出文件 = 参数表的最后一项
-outfile_of() { local s="${ARGS_OF[$1]}"; echo "${s##*$'\x1f'}"; }
+# CLI 的输出参数 = 参数表的最后一项。**这不是主产物本身**: wig/bigwig 是「前缀式」
+# 输出, 真实文件是 <前缀>.wig / <前缀>.bw; 只有 MAF 和其余格式的路径按原样使用。
+arg_out_of() { local s="${ARGS_OF[$1]}"; echo "${s##*$'\x1f'}"; }
 
-# 清掉某格式上一次的产物。不能简单地 `rm "$out"*`: unmap / bedGraph 等副产物的名字
-# 是 output 的**扩展名被替换**得来的 (GFF 的 gff.out.gff3 -> gff.out.gff.unmap),
-# 前缀通配符漏得掉。这里把每个格式的副产物显式列出来。
+# 某格式的全部产物 (含 unmap / 中间文件), 一行一个。
+# 不能简单地 `rm "$out"*`: unmap 的名字是 output 的**扩展名被替换**得来的
+# (gff.out.gff3 -> gff.out.gff.unmap), 前缀通配符漏得掉; 而且后缀式 unmap 与
+# 前缀式 (wig/bigwig) 的命名规则不同 —— 所以每个格式显式列出, 清理和哈希抽查共用。
+artifacts_of() {  # artifacts_of <name>
+    local o base; o=$(arg_out_of "$1"); base="${o%.*}"
+    case "$1" in
+        # <前缀>.wig + <前缀>.unmap.wig + 两个 spool 中间文件
+        wig)    printf '%s\n' "$o.wig" "$o.unmap.wig" "$o.tmp.mapped" "$o.tmp.unmapped" ;;
+        # <前缀>.bw + <前缀>.unmap.bedGraph + spool + bigtools 的中间 bedGraph
+        bigwig) printf '%s\n' "$o.bw" "$o.unmap.bedGraph" "$o.tmp.mapped" "$o.bw.temp.bedGraph" ;;
+        # MAF 输出路径按原样使用; unmap 是扩展名被换成 maf.unmap
+        maf)    printf '%s\n' "$o" "$base.maf.unmap" ;;
+        # 其余格式: 后缀式 unmap (扩展名被替换), 外加可能存在的索引
+        *)      printf '%s\n' "$o" "$o.bai" \
+                    "$base.bed.unmap" "$base.vcf.unmap" "$base.gvcf.unmap" \
+                    "$base.gff.unmap" "$base.maf.unmap" "$base.unmap" \
+                    "$base.bedGraph" "$base.bw" "$o.bedGraph" "$o.bw" ;;
+    esac
+}
+
+# 清掉某格式上一次的产物。
 clean_outputs() {  # clean_outputs <name>
-    local name="$1" out; out=$(outfile_of "$name")
-    local base="${out%.*}"
-    # 主产物
-    rm -f "$out" "$out".bai
-    # unmap: 名字是 output 的扩展名被替换 (gff.out.gff3 -> gff.out.gff.unmap);
-    # 各格式的后缀不同, 已知的就显式列, 再用通配兜底。
-    rm -f "$base".bed.unmap "$base".vcf.unmap "$base".gvcf.unmap \
-          "$base".gff.unmap "$base".maf.unmap "$base".unmap
-    # BigWig 的中间 bedGraph 与副产物
-    rm -f "$base".bedGraph "$base".bw "$out".bedGraph "$out".bw
+    local f
+    while IFS= read -r f; do rm -f "$f"; done < <(artifacts_of "$1")
 }
 
 # 参数表 -> 调用 FCM。所有调用点都走这里, 保证参数不会被空格拆错。
@@ -259,7 +307,6 @@ printf "format\tthreads\trep\twall_s\tuser_s\tsys_s\tmax_rss_kb\tflush_s\tok\n" 
 # measure_once <name> <t>  -> 回显 fmt<TAB>t<TAB>wall<TAB>user<TAB>sys<TAB>rss<TAB>ok
 measure_once() {
     local name="$1" t="$2"
-    local outfile; outfile=$(outfile_of "$name")
     clean_outputs "$name"
     local wall user sys rss rc
     if [ "$HAVE_GNU_TIME" = 1 ]; then
@@ -300,12 +347,11 @@ flush_dirty() {
 # 把每个格式的输入读进页缓存, 建好输出目录项。不计时、不记录。
 echo
 for name in "${JOB[@]}"; do
-    outfile=$(outfile_of "$name")
     for _ in $(seq 1 "$WARM"); do
         clean_outputs "$name"
         run_job "$name" "${THREADS%% *}" >/dev/null 2>&1 || true
     done
-    printf "  warm %-6s ok\n" "$name"
+    printf "  warm %-8s ok\n" "$name"
 done
 sync
 
@@ -351,13 +397,21 @@ done
 # ============================ 一致性抽查 ============================
 # 每个 (格式, t) 各跑一次, 比对哈希 —— 多线程不能改变输出。
 echo
+# 主产物和 unmap 都算哈希 —— 多线程不允许改变任何一个字节。
+# 中间文件 (spool / bigtools 的 temp.bedGraph) 是实现细节, 不参与抽查。
 for name in "${JOB[@]}"; do
-    outfile=$(outfile_of "$name")
     for t in "${THREAD_ARR[@]}"; do
         clean_outputs "$name"
         run_job "$name" "$t" >/dev/null 2>&1 || true
-        sha256sum "$outfile" 2>/dev/null \
-            | awk -v f="$name" -v t="$t" '{print f"\tt="t"\t"$1}' >> "$OUT/sha256.txt"
+        while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            case "$(basename "$f")" in
+                *.tmp.mapped|*.tmp.unmapped|*.temp.bedGraph) continue ;;
+            esac
+            sha256sum "$f" 2>/dev/null \
+                | awk -v f="$name" -v t="$t" -v a="$(basename "$f")" \
+                      '{print f"\tt="t"\t"a"\t"$1}' >> "$OUT/sha256.txt"
+        done < <(artifacts_of "$name")
         [ "$KEEP" = "1" ] || clean_outputs "$name"
     done
 done
@@ -421,3 +475,9 @@ echo "  flag=UNRELIABLE  → 该行抖动过大, 结论不可用, 用 FORMATS=<�
 echo "  flag=IO/throttle → wall 远大于 cpu, 受 I/O 或脏页限流限制, 加线程无用"
 echo "  eff 掉到 0.5 以下 → 已过收益递减点, 那之前的 t 就是推荐值"
 echo "  只有 t=1..4 有稳定加速而 8/16 变慢, 是正常的: 转换池、BGZF 池和写回在抢同一批核"
+echo "  wig/bigwig/maf 只把「链查找」并行化, 读/归并/写出仍是单线程。加速比低 (通常 1.3-1.4x)"
+echo "  的原因**不是 I/O**, 而是可并行占比小: 实测 (24 核) 链查找约占 t=1 运行时间的 28%,"
+echo "  eff 在 t=4 之后掉到 0.5 以下 —— 这是实现决定的, 不是 I/O 造成的。"
+echo "  注意: wig/bigwig 的批次默认值已是 262144 (旧版 4096 在 t=2 反而变慢, 0.68x/0.75x);"
+echo "  maf 的 chunk 可用 FCM_BATCH 覆盖 (默认 10000 是为内存而保守保留: 24MB vs CrossMap 48MB);"
+echo "  线程表用 FCM_BATCH=65536 运行, 此时 -t 2 不再回退 (0.82x -> 1.07x), 输出逐字节不变"

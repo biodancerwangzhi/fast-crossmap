@@ -397,7 +397,7 @@ def main():
     print("- Identity rate: Percentage of records with identical coordinates to liftOver")
     print("- Partial match: Intervals split into different number of output regions")
     print("- Coord mismatch: Same number of output records but different coordinates")
-    print("\nNext step: python paper/08_plot_accuracy.py")
+    print("\nNext step: python paper/plot/fig3_accuracy.py")
 
 
 if __name__ == "__main__":

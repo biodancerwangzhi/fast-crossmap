@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-04_plot_performance.py - Generate performance comparison figure (Figure 1)
+fig1_performance.py - Generate performance comparison figure (Figure 1)
 
 Figure 1 layout (2x2):
   (a) BED single-thread performance comparison - fair comparison across all tools
@@ -13,7 +13,7 @@ Design rationale:
 - Right column (b,d): Multi-thread scalability, showing FastCrossMap's parallel capability
 - Only show execution time, avoid redundancy with throughput
 
-Usage: python paper/04_plot_performance.py
+Usage: python paper/plot/fig1_performance.py
 Output: paper/figures/fig1_performance.pdf
 """
 

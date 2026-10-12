@@ -30,8 +30,14 @@ curl -sSL https://api.github.com/repos/biodancerwangzhi/fast-crossmap/releases/l
 #   gh release download --repo biodancerwangzhi/fast-crossmap \
 #       --pattern 'fcm-*-linux-x86_64.tar.gz' --dir . --clobber
 
-tar -xzf fcm-*-linux-x86_64.tar.gz
-sha256sum -c fcm-*-linux-x86_64/SHA256SUMS   # optional
+# Unpack the binary where the benchmark scripts look for it (they all default
+# to ./target/release/fast-crossmap). Extracting under target/ keeps it out of
+# git -- /target/ is ignored -- whereas unpacking at the repo root would leave
+# an untracked fcm-*/ directory behind.
+mkdir -p target/release
+tar -xzf fcm-*-linux-x86_64.tar.gz -C target/release --strip-components=1 \
+    'fcm-*/fast-crossmap'
+./target/release/fast-crossmap --version      # should print 0.6.0
 ```
 
 Other Linux builds, same version-agnostic pattern:
@@ -44,21 +50,17 @@ Other Linux builds, same version-agnostic pattern:
 
 **Step 3: Run test**
 
-The tarball unpacks to `fcm-<version>-linux-x86_64/`; `FCM` below picks it up
-whatever the version happens to be.
+Step 2 put the binary at `./target/release/fast-crossmap`:
 
 ```bash
-# Point FCM at the binary just unpacked (matches fcm-0.5.0-linux-x86_64, fcm-0.6.0-...)
-FCM=$(ls -d fcm-*-linux-x86_64)/fast-crossmap
-
 # BED conversion test
-"$FCM" bed \
+./target/release/fast-crossmap bed \
     paper/sample_data/hg19ToHg38.over.chain.gz \
     paper/sample_data/input/sample.bed \
     output.bed
 
 # SAM conversion test (via the `bam` subcommand)
-"$FCM" bam \
+./target/release/fast-crossmap bam \
     paper/sample_data/hg19ToHg38.over.chain.gz \
     paper/sample_data/input/sample.sam \
     output.sam
@@ -69,8 +71,8 @@ committed FastCrossMap output for those same inputs, so the test also checks the
 binary:
 
 ```bash
-diff output.bed paper/sample_data/output/sample_hg38.bed   # both print nothing
-diff output.sam paper/sample_data/output/sample_hg38.sam   # on a correct build
+diff output.bed paper/sample_data/output/sample_hg38.bed   # print nothing
+diff output.sam paper/sample_data/output/sample_hg38.sam   # print nothing
 ```
 
 ---
@@ -126,18 +128,21 @@ environment described under *Full Benchmark* below.
 ### Figures and tables - read the JSON above, write `paper/figures/*` and `paper/results/*`
 
 These need only `matplotlib` + `numpy`; no comparison tools.
+The plotting scripts live in `paper/plot/`; run them from the repository root
+(they resolve `paper/results` and `paper/figures` relative to the working directory).
 
 | Script | Reads | Writes |
 |--------|-------|--------|
-| `04_plot_performance.py` | `benchmark_bed.json`, `benchmark_bam.json`, `benchmark_{bed,bam}_multithread.json` | `fig1_performance.*`, `fig1a`-`fig1d` |
-| `06_plot_memory.py` | `memory_profile.json` | `fig2_memory.*`, `fig2a`, `fig2b` |
-| `06b_plot_memory_scalability.py` | `memory_scalability.json` | `figS2_memory_scalability.*`, `figS2a`-`figS2c` |
-| `08_plot_accuracy.py` | `accuracy.json` | `fig3_accuracy.*`, `fig3a`, `fig3b` |
+| `plot/fig1_performance.py` | `benchmark_bed.json`, `benchmark_bam.json`, `benchmark_{bed,bam}_multithread.json` | `fig1_performance.*`, `fig1a`-`fig1d` |
+| `plot/fig2_memory.py` | `memory_profile.json` | `fig2_memory.*`, `fig2a`, `fig2b` |
+| `plot/06b_plot_memory_scalability.py` | `memory_scalability.json` | `figS2_memory_scalability.*`, `figS2a`-`figS2c` |
+| `plot/fig3_accuracy.py` | `accuracy.json` | `fig3_accuracy.*`, `fig3a`, `fig3b` |
 | `09_feature_audit.py` | (feature matrix is entered here) | `features.json` |
-| `10_plot_features.py` | `features.json` | `fig4_features.*`, `fig4_features_heatmap` |
-| `11_plot_radar.py` | `benchmark_bed.json`, `benchmark_bam.json`, `memory_profile.json`, `features.json`, `accuracy.json` | `fig5_radar.*`, `fig5_radar_chart`, `radar_scores.json` |
+| `plot/fig4_features.py` | `features.json` | `fig4_features.*`, `fig4_features_heatmap` |
+| `plot/fig5_radar.py` | `benchmark_bed.json`, `benchmark_bam.json`, `memory_profile.json`, `features.json`, `accuracy.json` | `fig5_radar.*`, `fig5_radar_chart`, `radar_scores.json` |
+| `plot/figS1_scaling.py` | `benchmark_vcf.json`, `benchmark_maf.json` | `figS1_scaling.*`, `scaling_fit.json` |
 | `13_large_scale_estimation.py` | `benchmark_bed.json`, `benchmark_bam.json`, `benchmark_vcf.json` | `large_scale_estimation.json` |
-| `18_plot_supplementary.py` | all eight `benchmark_*.json` | `fig_s1_all_formats.*`, `fig_s2_speedup_consistency.*` |
+| `plot/18_plot_supplementary.py` | all eight `benchmark_*.json` | `fig_s1_all_formats.*`, `fig_s2_speedup_consistency.*` |
 | `19_generate_supp_table.py` | all eight `benchmark_*.json` | `supplementary_tables.json` |
 
 ### Threading and determinism tools - need the FastCrossMap binary
@@ -147,14 +152,6 @@ These need only `matplotlib` + `numpy`; no comparison tools.
 | `20_benchmark_threads.sh` | `-t N` scaling per format | `paper/results/threads-<timestamp>/{timings,summary}.tsv` |
 | `21_check_determinism.sh` | output must be byte-identical across `-t` | `paper/results/determinism-<timestamp>/` |
 | `22_run_benchmarks_pinned.sh` | run `02*`/`03` with one core pinned each | per-script logs |
-
-### Drivers and environment
-
-| Script | Purpose | Notes |
-|--------|---------|-------|
-| `12_run_all.sh` | convenience driver | Runs only `01`, `02`, `02b`, `03`, `03b`, `04`, `05`, `06`, `07`, `08`, `09_feature_audit`, `10_plot_features`, `11`. It does **not** cover `02c`-`02h`, `05b`, `06b`, `09_benchmark_realignment`, `10_accuracy_realignment`, `13`, `18`, `19` |
-| `run_all_benchmarks.sh` | legacy 8-format driver | Superseded by `22_run_benchmarks_pinned.sh` (which pins CPUs) |
-| `setup_benchmark_env.sh` | fresh-server bootstrap (conda env, tools, optional data) | - |
 
 ---
 
@@ -174,11 +171,12 @@ bash paper/01_download_data.sh
 ```
 
 **Step 3: Run benchmarks**
-```bash
-# Convenience driver (see the caveat on coverage in Script Inventory above)
-bash paper/12_run_all.sh
 
-# Or the per-format scripts directly, one per format:
+One script per format. On a multi-core machine the eight single-format
+benchmarks can instead run in parallel with one core pinned each -- see
+`22_run_benchmarks_pinned.sh` below.
+
+```bash
 python paper/02_benchmark_bed.py        # -> benchmark_bed.json
 python paper/02c_benchmark_vcf.py       # -> benchmark_vcf.json
 python paper/02d_benchmark_gff.py       # -> benchmark_gff.json
@@ -206,34 +204,37 @@ python paper/03b_benchmark_bam_multithread.py   # -> paper/results/benchmark_bam
 
 **Step 4: Generate figures and tables** (local, JSON only)
 ```bash
-python paper/04_plot_performance.py
-python paper/06_plot_memory.py
-python paper/06b_plot_memory_scalability.py
-python paper/08_plot_accuracy.py
-python paper/10_plot_features.py
-python paper/11_plot_radar.py
+python paper/plot/fig1_performance.py
+python paper/plot/fig2_memory.py
+python paper/plot/06b_plot_memory_scalability.py
+python paper/plot/fig3_accuracy.py
+python paper/plot/fig4_features.py
+python paper/plot/fig5_radar.py
+python paper/plot/figS1_scaling.py
 python paper/13_large_scale_estimation.py
-python paper/18_plot_supplementary.py
+python paper/plot/18_plot_supplementary.py
 python paper/19_generate_supp_table.py
 ```
 
-All benchmark scripts expect the binary at `./target/release/fast-crossmap`
-(build it with `cargo build --release`, or drop a pre-built binary there).
-`02b` / `03b` / `05b` / `07` also honour `FCM_BIN=/path/to/fast-crossmap`, and the
-shell scripts `20` / `21` honour `FCM=`.
+All benchmark scripts expect the binary at `./target/release/fast-crossmap`,
+which is where Step 2 unpacks it.
 
 ---
 
-## Multi-threading Scalability (~1 hour)
+## Multi-threading Scalability (8 formats, several hours)
 
 Measures FastCrossMap's own `-t` scaling per format. Prints `timings.tsv`
 (raw runs) and `summary.tsv` (median / spread / speedup / parallel efficiency).
 This does not change the paper's cross-tool comparison, which is `-t 1`
 throughout (CrossMap has no multithreading).
 
+Both scripts cover all 8 formats by default. Wiggle, BigWig and MAF are
+I/O-bound, so their curves rise much less than BAM's — run a subset while
+debugging:
+
 ```bash
-FCM=/path/to/fast-crossmap bash paper/20_benchmark_threads.sh
-FCM=/path/to/fast-crossmap bash paper/21_check_determinism.sh   # output must be byte-identical across -t
+bash paper/20_benchmark_threads.sh
+bash paper/21_check_determinism.sh   # output must be byte-identical across -t
 ```
 
 ---

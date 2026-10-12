@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-08_plot_accuracy.py - Generate accuracy comparison figure (Figure 3)
+fig3_accuracy.py - Generate accuracy comparison figure (Figure 3)
 
 Figure 3 design:
   Table format showing accuracy metrics comparison
@@ -14,7 +14,7 @@ Design rationale:
 - Highlight FastCrossMap's high consistency with liftOver
 - Quantify accuracy differences between tools
 
-Usage: python paper/08_plot_accuracy.py
+Usage: python paper/plot/fig3_accuracy.py
 Output: paper/figures/fig3_accuracy.pdf
 """
 

@@ -372,7 +372,7 @@ def main():
         }, f, indent=2)
     
     print(f"\nResults saved to: {output_json}")
-    print("\nNext step: python paper/10_plot_features.py")
+    print("\nNext step: python paper/plot/fig4_features.py")
 
 
 if __name__ == "__main__":

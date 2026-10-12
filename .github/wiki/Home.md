@@ -53,4 +53,4 @@ Welcome to **FastCrossMap** - a high-performance genome coordinate liftover tool
 ```
 
 ---
-**Version**: v0.6.0 | **Author**: Wang Zhi | **License**: MIT
+**Version**: v0.7.0 | **Author**: Wang Zhi | **License**: MIT

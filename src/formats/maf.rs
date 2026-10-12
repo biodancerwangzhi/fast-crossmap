@@ -248,7 +248,14 @@ enum ChunkItem {
     Failed(String),
 }
 
-const CHUNK_SIZE: usize = 10_000;
+/// Records parsed and mapped per chunk.
+///
+/// The length only trades memory for how long each `pool.install` keeps the
+/// workers busy; it does not change the bytes written. `FCM_BATCH` overrides the
+/// default, so the chunking can be swept like Wiggle/BigWig's batch size.
+fn chunk_size() -> usize {
+    crate::core::pipeline::batch_size_maf()
+}
 
 fn flush_chunk(
     chunk: &mut Vec<ChunkItem>,
@@ -330,13 +337,100 @@ fn flush_chunk(
     Ok(())
 }
 
+/// Parse and map one batch of MAF rows, then flush them in order.
+///
+/// The chain lookup (`mapper.map`) is the only per-record work that touches the
+/// pool; `ChunkItem`s come back in input order, so `flush_chunk` writes exactly
+/// the bytes the single-threaded path would. `pool` is `None` for a
+/// single-threaded run and the mapping then runs inline.
+#[allow(clippy::too_many_arguments)]
+fn flush_maf_batch(
+    pending: &mut Vec<String>,
+    indices: &MafColumnIndices,
+    mapper: &CoordinateMapper,
+    pool: Option<&rayon::ThreadPool>,
+    chunk: &mut Vec<ChunkItem>,
+    total: &mut usize,
+    failed: &mut usize,
+    success: &mut usize,
+    ref_reader: Option<&crate::core::fasta::FastaReader>,
+    output_file: &mut BufWriter<std::fs::File>,
+    unmap_file: &mut BufWriter<std::fs::File>,
+    target_build: &str,
+) -> std::io::Result<()> {
+    use rayon::prelude::*;
+
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let map_line = |line: &String| -> ChunkItem {
+        let mapped = MafRecordView::parse(line.as_bytes(), indices)
+            .ok()
+            .and_then(|view| {
+                let start = view.start_position().ok()?;
+                let end = view.end_position().ok()?;
+                let chrom = view.chromosome();
+                let start_0based = start - 1;
+                let end_0based = end;
+
+                let segments = mapper.map(chrom, start_0based, end_0based, Strand::Plus)?;
+                if segments.len() != 1 {
+                    return None;
+                }
+
+                let seg = &segments[0];
+                Some(MappedRecord {
+                    fields: view.fields().iter().map(|s| s.to_string()).collect(),
+                    indices: indices.clone(),
+                    target_chrom: seg.target.chrom.clone(),
+                    target_start_0based: seg.target.start,
+                    target_end_0based: seg.target.end,
+                    target_start_1based: seg.target.start + 1,
+                    target_end_1based: seg.target.end,
+                    target_strand: seg.target.strand,
+                })
+            });
+
+        match mapped {
+            Some(rec) => ChunkItem::Mapped(rec),
+            None => ChunkItem::Failed(line.clone()),
+        }
+    };
+
+    let mut items: Vec<ChunkItem> = match pool {
+        Some(pool) => pool.install(|| pending.par_iter().map(map_line).collect()),
+        None => pending.iter().map(map_line).collect(),
+    };
+
+    // Every pending line reached here with a known column layout, so all of them
+    // count towards `total`; the ones that failed to parse or map are the
+    // `Failed` items (the reference-fetch failures are counted later, in
+    // `flush_chunk`).
+    *total += pending.len();
+    *failed += items.iter().filter(|it| matches!(it, ChunkItem::Failed(_))).count();
+    chunk.append(&mut items);
+    pending.clear();
+
+    if chunk.len() >= chunk_size() {
+        flush_chunk(chunk, ref_reader, output_file, unmap_file, target_build, success, failed)?;
+    }
+
+    Ok(())
+}
+
 /// Convert a MAF file using chunked batch-fetch for low memory.
+///
+/// `threads > 1` maps each chunk's records across a worker pool; the chain
+/// lookups are independent, so batch order — and therefore every byte written —
+/// is unchanged. Reference fetch and output stay on this thread.
 pub fn convert_maf<P: AsRef<Path>>(
     input: P,
     output: P,
     mapper: &CoordinateMapper,
     ref_genome: Option<P>,
     target_build: &str,
+    threads: usize,
 ) -> Result<ConversionStats, std::io::Error> {
     let input_file = std::fs::File::open(input.as_ref())?;
     let reader = BufReader::with_capacity(128 * 1024, input_file);
@@ -357,7 +451,11 @@ pub fn convert_maf<P: AsRef<Path>>(
     let mut headers: usize = 0;
 
     let mut column_indices: Option<MafColumnIndices> = None;
-    let mut chunk: Vec<ChunkItem> = Vec::with_capacity(CHUNK_SIZE);
+    let mut chunk: Vec<ChunkItem> = Vec::with_capacity(chunk_size());
+    // Lines awaiting a parallel mapping pass. Only ever holds lines for which the
+    // column layout is known; the pre-header lines go straight to the unmap file.
+    let mut pending: Vec<String> = Vec::with_capacity(chunk_size());
+    let pool = crate::core::pipeline::build_pool(threads);
 
     for line in reader.lines() {
         let line = line?;
@@ -384,60 +482,54 @@ pub fn convert_maf<P: AsRef<Path>>(
             }
         }
 
+        // Without a column layout nothing can be mapped; this is the same
+        // treatment the Failed arm gave these lines, written straight out because
+        // they always precede the header and therefore every mapped record.
         let indices = match &column_indices {
             Some(i) => i,
             None => {
-                chunk.push(ChunkItem::Failed(line));
+                writeln!(unmap_file, "{}", line)?;
                 failed += 1;
-                if chunk.len() >= CHUNK_SIZE {
-                    flush_chunk(&mut chunk, ref_reader.as_ref(), &mut output_file, &mut unmap_file, target_build, &mut success, &mut failed)?;
-                }
                 continue;
             }
         };
 
-        total += 1;
-
-        let parsed = MafRecordView::parse(line.as_bytes(), indices);
-        let mapped = parsed.ok().and_then(|view| {
-            let start = view.start_position().ok()?;
-            let end = view.end_position().ok()?;
-            let chrom = view.chromosome();
-            let start_0based = start - 1;
-            let end_0based = end;
-
-            let segments = mapper.map(chrom, start_0based, end_0based, Strand::Plus)?;
-            if segments.len() != 1 {
-                return None;
-            }
-
-            let seg = &segments[0];
-            Some(MappedRecord {
-                fields: view.fields().iter().map(|s| s.to_string()).collect(),
-                indices: indices.clone(),
-                target_chrom: seg.target.chrom.clone(),
-                target_start_0based: seg.target.start,
-                target_end_0based: seg.target.end,
-                target_start_1based: seg.target.start + 1,
-                target_end_1based: seg.target.end,
-                target_strand: seg.target.strand,
-            })
-        });
-
-        match mapped {
-            Some(rec) => chunk.push(ChunkItem::Mapped(rec)),
-            None => {
-                chunk.push(ChunkItem::Failed(line));
-                failed += 1;
-            }
-        }
-
-        if chunk.len() >= CHUNK_SIZE {
-            flush_chunk(&mut chunk, ref_reader.as_ref(), &mut output_file, &mut unmap_file, target_build, &mut success, &mut failed)?;
+        pending.push(line);
+        if pending.len() >= chunk_size() {
+            flush_maf_batch(
+                &mut pending,
+                indices,
+                mapper,
+                pool.as_ref(),
+                &mut chunk,
+                &mut total,
+                &mut failed,
+                &mut success,
+                ref_reader.as_ref(),
+                &mut output_file,
+                &mut unmap_file,
+                target_build,
+            )?;
         }
     }
 
-    // Flush remaining
+    // Flush the last partial batch, then anything left in the chunk.
+    if let Some(indices) = &column_indices {
+        flush_maf_batch(
+            &mut pending,
+            indices,
+            mapper,
+            pool.as_ref(),
+            &mut chunk,
+            &mut total,
+            &mut failed,
+            &mut success,
+            ref_reader.as_ref(),
+            &mut output_file,
+            &mut unmap_file,
+            target_build,
+        )?;
+    }
     flush_chunk(&mut chunk, ref_reader.as_ref(), &mut output_file, &mut unmap_file, target_build, &mut success, &mut failed)?;
 
     Ok(ConversionStats {

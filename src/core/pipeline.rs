@@ -46,6 +46,53 @@ pub fn batch_size() -> usize {
     batch_size_or(DEFAULT_BATCH_SIZE)
 }
 
+/// Default batch size for Wiggle/BigWig.
+///
+/// Deliberately much larger than `DEFAULT_BATCH_SIZE`. Those two formats do not
+/// use the async pipeline above: each batch is mapped with one `pool.install`
+/// and the parse/spool on either side stays on the calling thread. With 4096
+/// records a 1.2 GB Wiggle file (~50M points) pays ~12k installs, and each one
+/// wakes the rayon workers that the single-threaded gap between batches just put
+/// to sleep — at `-t 2` that cost more than the parallelism returned, so the
+/// run was *slower* than `-t 1` (0.69x on wig, 0.75x on bigwig).
+///
+/// Measured on a 24-core box over `wig_gm12878_h3k27ac.wig` and its bigWig
+/// (`paper/results/probe-batch-20261011-*`): the wasted CPU at `-t 2` shrank
+/// monotonically with batch size (+41 s at 4096, +6 s at 262144) and the
+/// speedup curve flattens there — 262144 and 1048576 measure identically
+/// (wig 1.11x, bigwig 1.09x at `-t 2`), so 262144 is the knee and going larger
+/// only costs memory. 65536 is reported too, but still regresses at `-t 2`
+/// (0.91x/0.86x), so it is not the default.
+///
+/// `FCM_BATCH` still overrides this, so the knob remains available for probing.
+pub fn batch_size_wig() -> usize {
+    batch_size_or(262_144)
+}
+
+/// Default chunk size for MAF.
+///
+/// MAF uses the same simple install pattern as Wiggle/BigWig — one `pool.install`
+/// per chunk, with parse and write staying on the calling thread — but its chunk
+/// length has always been a hardcoded constant with no override, so unlike those
+/// two formats it was never swept. A chunk short enough for the rayon workers to
+/// park again before the next one leaves them running well below the core clock
+/// (measured at `-t 2`: workers at ~1.1 GHz against ~2.8 GHz on the calling
+/// thread), which is what made `-t 2` slower than `-t 1`.
+///
+/// `FCM_BATCH` overrides this, so the knob can be swept exactly like
+/// Wiggle/BigWig's. The chunk length does not affect the output bytes.
+///
+/// The default is deliberately left at the historical 10_000 rather than raised
+/// to the ~32k-64k that removes the `-t 2` penalty (see the batch-size table in
+/// `paper/`): a chunk buffer is a per-process fixed cost, and MAF's headline
+/// result is its peak memory — 24 MB against CrossMap's 48 MB (0.50x) on every
+/// dataset. At 32k that flips to ~53 MB (1.10x CrossMap), i.e. the memory win
+/// would be traded away to improve one cell of the thread table. Thread-scan
+/// runs that want the flat curve pass `FCM_BATCH=32768` explicitly.
+pub fn batch_size_maf() -> usize {
+    batch_size_or(10_000)
+}
+
 /// How many batches may be queued between two stages.
 ///
 /// Each stage is allowed to run this far ahead of the next one, which is what
@@ -400,6 +447,24 @@ fn convert_workers(threads: usize) -> usize {
     match std::env::var("FCM_CONV_CAP").ok().and_then(|v| v.parse().ok()) {
         Some(cap) => threads.min(cap).max(1),
         None => threads,
+    }
+}
+
+/// Build a worker pool of `threads` threads, or `None` for single-threaded runs.
+///
+/// Formats that parallelise only their per-record mapping (rather than running
+/// the full overlapped pipeline) use this to get the same `-t` control without
+/// the reader/converter/writer split. Returning `None` for `threads == 1` keeps
+/// the sequential path allocation-free and, because the parallel path only ever
+/// reorders nothing, byte-identical to it.
+pub fn build_pool(threads: usize) -> Option<rayon::ThreadPool> {
+    if threads > 1 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .ok()
+    } else {
+        None
     }
 }
 

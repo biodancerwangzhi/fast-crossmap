@@ -56,6 +56,24 @@ enum ChromStyleArg {
     Long,
 }
 
+/// Parse a `-t` value, resolving `0` to "every available core".
+///
+/// Kept in one place so all subcommands agree. The per-record mapping is the only
+/// thing any of them parallelises, and it never reorders records, so the resolved
+/// count cannot change the output bytes.
+fn parse_threads(s: &str) -> Result<usize, String> {
+    let n: usize = s
+        .parse()
+        .map_err(|_| format!("invalid thread count: {}", s))?;
+    Ok(if n == 0 {
+        std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1)
+    } else {
+        n
+    })
+}
+
 impl From<ChromStyleArg> for ChromStyle {
     fn from(arg: ChromStyleArg) -> Self {
         match arg {
@@ -77,7 +95,7 @@ enum Commands {
         /// Output file (optional, stdout if not specified)
         output: Option<PathBuf>,
         /// Number of worker threads (default: 1)
-        #[arg(short = 't', long, default_value = "1")]
+        #[arg(short = 't', long, default_value = "1", value_parser = parse_threads)]
         threads: usize,
         /// Chromosome ID style: a(as-is), s(short), l(long)
         #[arg(long = "chromid", default_value = "a")]
@@ -94,7 +112,7 @@ enum Commands {
         /// Output file (optional, stdout if not specified)
         output: Option<PathBuf>,
         /// Number of worker threads (default: 1)
-        #[arg(short = 't', long, default_value = "1")]
+        #[arg(short = 't', long, default_value = "1", value_parser = parse_threads)]
         threads: usize,
         /// Don't filter variants where REF==ALT after liftover
         #[arg(long = "no-comp-allele")]
@@ -112,7 +130,7 @@ enum Commands {
         /// Output file (optional, stdout if not specified)
         output: Option<PathBuf>,
         /// Number of worker threads (default: 1)
-        #[arg(short = 't', long, default_value = "1")]
+        #[arg(short = 't', long, default_value = "1", value_parser = parse_threads)]
         threads: usize,
         /// Chromosome ID style: a(as-is), s(short), l(long)
         #[arg(long = "chromid", default_value = "a")]
@@ -132,7 +150,7 @@ enum Commands {
         #[arg(long = "no-comp-allele")]
         no_comp_allele: bool,
         /// Number of worker threads (default: 1)
-        #[arg(short = 't', long, default_value = "1")]
+        #[arg(short = 't', long, default_value = "1", value_parser = parse_threads)]
         threads: usize,
         /// Chromosome ID style: a(as-is), s(short), l(long)
         #[arg(long = "chromid", default_value = "a")]
@@ -151,6 +169,9 @@ enum Commands {
         build: String,
         /// Output file (optional, stdout if not specified)
         output: Option<PathBuf>,
+        /// Number of worker threads (default: 1)
+        #[arg(short = 't', long, default_value = "1", value_parser = parse_threads)]
+        threads: usize,
         /// Chromosome ID style: a(as-is), s(short), l(long)
         #[arg(long = "chromid", default_value = "a")]
         chrom_style: ChromStyleArg,
@@ -163,6 +184,9 @@ enum Commands {
         input: PathBuf,
         /// Output file (optional, stdout if not specified)
         output: Option<PathBuf>,
+        /// Number of worker threads (default: 1)
+        #[arg(short = 't', long, default_value = "1", value_parser = parse_threads)]
+        threads: usize,
         /// Chromosome ID style: a(as-is), s(short), l(long)
         #[arg(long = "chromid", default_value = "a")]
         chrom_style: ChromStyleArg,
@@ -177,7 +201,7 @@ enum Commands {
         /// Output BAM file
         output: PathBuf,
         /// Number of worker threads (default: 1)
-        #[arg(short = 't', long, default_value = "1")]
+        #[arg(short = 't', long, default_value = "1", value_parser = parse_threads)]
         threads: usize,
         /// Chromosome ID style: a(as-is), s(short), l(long)
         #[arg(long = "chromid", default_value = "a")]
@@ -206,6 +230,9 @@ enum Commands {
         input: PathBuf,
         /// Output file prefix (will create .bgr file)
         output: Option<PathBuf>,
+        /// Number of worker threads (default: 1)
+        #[arg(short = 't', long, default_value = "1", value_parser = parse_threads)]
+        threads: usize,
         /// Chromosome ID style: a(as-is), s(short), l(long)
         #[arg(long = "chromid", default_value = "a")]
         chrom_style: ChromStyleArg,
@@ -300,16 +327,16 @@ fn main() -> anyhow::Result<()> {
             eprintln!("Time elapsed:    {:.2}s", start.elapsed().as_secs_f64());
         }
         
-        Commands::Maf { chain, input, refgenome, build, output, chrom_style } => {
+        Commands::Maf { chain, input, refgenome, build, output, threads, chrom_style } => {
             let mapper = load_chain(&chain, chrom_style, cli.compat_mode)?;
             let output_path = output.unwrap_or_else(|| PathBuf::from("output.maf"));
-            
+
             eprintln!("Converting MAF file: {:?} -> {:?}", input, output_path);
             eprintln!("Reference genome: {:?}", refgenome);
             eprintln!("Target build: {}", build);
             let stats = formats::convert_maf(
-                &input, &output_path, &mapper, 
-                Some(&refgenome), &build
+                &input, &output_path, &mapper,
+                Some(&refgenome), &build, threads
             )?;
             
             eprintln!("\n=== Conversion Statistics ===");
@@ -319,12 +346,12 @@ fn main() -> anyhow::Result<()> {
             eprintln!("Time elapsed:    {:.2}s", start.elapsed().as_secs_f64());
         }
         
-        Commands::Wig { chain, input, output, chrom_style } => {
+        Commands::Wig { chain, input, output, threads, chrom_style } => {
             let mapper = load_chain(&chain, chrom_style, cli.compat_mode)?;
             let output_path = output.unwrap_or_else(|| PathBuf::from("output.bedGraph"));
-            
+
             eprintln!("Converting Wiggle file: {:?} -> {:?}", input, output_path);
-            let stats = formats::convert_wig(&input, &output_path, &mapper)?;
+            let stats = formats::convert_wig(&input, &output_path, &mapper, threads)?;
             
             eprintln!("\n=== Conversion Statistics ===");
             eprintln!("Total records:   {}", stats.total);
@@ -392,12 +419,12 @@ fn main() -> anyhow::Result<()> {
             eprintln!("Time elapsed:    {:.2}s", start.elapsed().as_secs_f64());
         }
         
-        Commands::Bigwig { chain, input, output, chrom_style } => {
+        Commands::Bigwig { chain, input, output, threads, chrom_style } => {
             let mapper = load_chain(&chain, chrom_style, cli.compat_mode)?;
             let output_path = output.unwrap_or_else(|| PathBuf::from("output"));
-            
+
             eprintln!("Converting BigWig file: {:?} -> {:?}", input, output_path);
-            let stats = formats::convert_bigwig(&input, &output_path, &mapper)?;
+            let stats = formats::convert_bigwig(&input, &output_path, &mapper, threads)?;
             
             eprintln!("\n=== Conversion Statistics ===");
             eprintln!("Total records:   {}", stats.total);

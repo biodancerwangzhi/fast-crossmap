@@ -9,7 +9,7 @@
 ## Features
 
 - 🚀 **10-20x faster** than CrossMap (single-threaded)
-- 🧵 **Multi-threading support** with near-linear scalability
+- 🧵 **Multi-threading support**: `-t N` on every format except `region` (`-t 0` = all cores)
 - 💾 **~70x less memory** usage (14.5MB vs 1,022MB for BAM processing)
 - ✅ **100% compatible** with CrossMap output (strict mode)
 - 📦 **8 file formats** supported: BED, BAM/SAM, VCF, GVCF, GFF/GTF, Wiggle, BigWig, MAF
@@ -36,9 +36,9 @@ Download from [Releases](https://github.com/biodancerwangzhi/fast-crossmap/relea
 
 ```bash
 # Linux (x86_64, glibc >= 2.34)
-wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.6.0-linux-x86_64.tar.gz
-tar -xzf fcm-0.6.0-linux-x86_64.tar.gz
-cd fcm-0.6.0-linux-x86_64
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.7.0-linux-x86_64.tar.gz
+tar -xzf fcm-0.7.0-linux-x86_64.tar.gz
+cd fcm-0.7.0-linux-x86_64
 chmod +x fast-crossmap
 ./fast-crossmap --help
 
@@ -47,16 +47,16 @@ sudo mv fast-crossmap /usr/local/bin/
 # Or: export PATH="$PWD:$PATH"
 
 # Linux (ARM64)
-wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.6.0-linux-arm64.tar.gz
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.7.0-linux-arm64.tar.gz
 
 # macOS (Apple Silicon)
-wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.6.0-macos-arm64.tar.gz
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.7.0-macos-arm64.tar.gz
 
 # macOS (Intel)
-wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.6.0-macos-x86_64.tar.gz
+wget https://github.com/biodancerwangzhi/fast-crossmap/releases/latest/download/fcm-0.7.0-macos-x86_64.tar.gz
 
 # Windows (x64)
-# Download fcm-0.6.0-windows-x64.zip from Releases
+# Download fcm-0.7.0-windows-x64.zip from Releases
 ```
 
 ### Build from Source
@@ -133,7 +133,7 @@ fast-crossmap bigwig hg19ToHg38.chain.gz input.bw output
 # Use 4 threads
 fast-crossmap bed -t 4 hg19ToHg38.chain.gz input.bed output.bed
 
-# Use all available cores
+# Use all available cores (`-t 0`)
 fast-crossmap bed -t 0 hg19ToHg38.chain.gz input.bed output.bed
 ```
 
@@ -165,7 +165,7 @@ fast-crossmap bed hg19ToHg38.chain.gz input.bed.gz output.bed
 | GFF/GTF | Gene annotations | - | ✅ |
 | Wiggle | Coverage tracks | - | ✅ |
 | BigWig | Binary Wiggle | - | ✅ |
-| MAF | Mutation Annotation Format | Required | - |
+| MAF | Mutation Annotation Format | Required | ✅ |
 
 ## Comparison with Other Tools
 

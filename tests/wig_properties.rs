@@ -191,7 +191,7 @@ variableStep chrom=chr2 span=10
     std::fs::write(&input_path, test_wig).unwrap();
     
     // Convert
-    let stats = convert_wig(&input_path, &output_prefix, &mapper).unwrap();
+    let stats = convert_wig(&input_path, &output_prefix, &mapper, 1).unwrap();
     
     eprintln!("Wiggle conversion stats: total={}, success={}, failed={}, merged={}", 
               stats.total, stats.success, stats.failed, stats.merged);
@@ -271,7 +271,7 @@ fixedStep chrom=chr1 start=100000 step=100 span=50
     std::fs::write(&input_path, test_wig).unwrap();
     
     // Convert
-    let stats = convert_wig(&input_path, &output_prefix, &mapper).unwrap();
+    let stats = convert_wig(&input_path, &output_prefix, &mapper, 1).unwrap();
     
     eprintln!("fixedStep conversion stats: total={}, success={}, failed={}, merged={}", 
               stats.total, stats.success, stats.failed, stats.merged);
@@ -363,7 +363,7 @@ variableStep chrom=chr2 span=10
     // Run FastCrossMap
     let index = ChainIndex::from_chain_file(&chain_path).expect("Failed to load chain file");
     let mapper = CoordinateMapper::new(index, ChromStyle::AsIs);
-    let stats = convert_wig(&input_path, &fast_output, &mapper).unwrap();
+    let stats = convert_wig(&input_path, &fast_output, &mapper, 1).unwrap();
     
     eprintln!("FastCrossMap Wiggle: total={}, success={}, failed={}", stats.total, stats.success, stats.failed);
     
@@ -483,7 +483,7 @@ variableStep chrom=chr1 span=10
 
     std::fs::write(&input_path, test_wig).unwrap();
 
-    let stats = convert_wig(&input_path, &output_prefix, &mapper).unwrap();
+    let stats = convert_wig(&input_path, &output_prefix, &mapper, 1).unwrap();
     assert_eq!(stats.total, 8, "all eight points should be read");
     assert_eq!(stats.success, 8, "all eight points should map");
     assert_eq!(stats.failed, 0, "no point should fail to map");
@@ -529,4 +529,57 @@ variableStep chrom=chr1 span=10
     let _ = std::fs::remove_file(&input_path);
     let _ = std::fs::remove_file(&output_path);
     let _ = std::fs::remove_file(format!("{}.unmap.wig", output_prefix.display()));
+}
+
+/// The parallel mapping path must write the same bytes as the sequential one.
+///
+/// Two things could in principle let `-t` change the output, and the input is
+/// built to hit both: it is larger than the pipeline batch (4096), so it is split
+/// across many batches, and it revisits `chr1` after other chromosomes, so the
+/// spool index keeps more than one segment for it.
+#[test]
+fn test_wig_threads_byte_identical() {
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
+    if !chain_path.exists() {
+        eprintln!("Skipping test: chain file not found");
+        return;
+    }
+
+    let index = ChainIndex::from_chain_file(&chain_path).expect("Failed to load chain file");
+    let mapper = CoordinateMapper::new(index, ChromStyle::AsIs);
+
+    // ~12k bedGraph points, cycling chr1/chr2/chr10 so the input is not grouped.
+    let chroms = ["chr1", "chr2", "chr10"];
+    let mut wig = String::from("track type=wiggle_0 name=\"threads\"\n");
+    for i in 0..12_000u64 {
+        // Every 97th point sits on a chromosome the chain has never heard of, so
+        // the `.unmap.wig` half of the comparison is exercised too.
+        let chrom: &str = if i % 97 == 0 { "chrNotInChain" } else { chroms[(i % 3) as usize] };
+        let start = 100_000 + (i % 500) * 10;
+        wig.push_str(&format!("{}\t{}\t{}\t{}.5\n", chrom, start, start + 10, i % 7));
+    }
+
+    let temp_dir = std::env::temp_dir();
+    let input_path = temp_dir.join("test_threads_input.wig");
+    std::fs::write(&input_path, &wig).unwrap();
+
+    let mut outputs = Vec::new();
+    for t in [1usize, 4] {
+        let prefix = temp_dir.join(format!("test_threads_{}", t));
+        convert_wig(&input_path, &prefix, &mapper, t).unwrap();
+        outputs.push((
+            std::fs::read(format!("{}.wig", prefix.display())).unwrap(),
+            std::fs::read(format!("{}.unmap.wig", prefix.display())).unwrap(),
+        ));
+    }
+
+    assert_eq!(outputs[0].0, outputs[1].0, "-t 4 .wig differs from -t 1");
+    assert_eq!(outputs[0].1, outputs[1].1, "-t 4 .unmap.wig differs from -t 1");
+
+    for t in [1usize, 4] {
+        let prefix = temp_dir.join(format!("test_threads_{}", t));
+        let _ = std::fs::remove_file(format!("{}.wig", prefix.display()));
+        let _ = std::fs::remove_file(format!("{}.unmap.wig", prefix.display()));
+    }
+    let _ = std::fs::remove_file(&input_path);
 }

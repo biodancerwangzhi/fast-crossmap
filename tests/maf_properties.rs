@@ -156,7 +156,7 @@ EGFR\t1956\tBCM\tGRCh37\tchr2\t200000\t200000\t+\tMissense_Mutation\tSNP\tA\tA\t
     std::fs::write(&input_path, test_maf).unwrap();
     
     // Convert
-    let stats = convert_maf(&input_path, &output_path, &mapper, None::<&PathBuf>, "GRCh38").unwrap();
+    let stats = convert_maf(&input_path, &output_path, &mapper, None::<&PathBuf>, "GRCh38", 1).unwrap();
     
     eprintln!("MAF conversion stats: total={}, success={}, failed={}, headers={}", 
               stats.total, stats.success, stats.failed, stats.headers);
@@ -232,7 +232,7 @@ BRCA1\t672\tBCM\tGRCh37\tchr2\t50000\t50000\t+\tMissense_Mutation\tSNP\tC\tC\tT\
     // Run FastCrossMap
     let index = ChainIndex::from_chain_file(&chain_path).expect("Failed to load chain file");
     let mapper = CoordinateMapper::new(index, ChromStyle::AsIs);
-    let stats = convert_maf(&input_path, &fast_output, &mapper, None::<&PathBuf>, "GRCh38").unwrap();
+    let stats = convert_maf(&input_path, &fast_output, &mapper, None::<&PathBuf>, "GRCh38", 1).unwrap();
     
     eprintln!("FastCrossMap MAF: total={}, success={}, failed={}", stats.total, stats.success, stats.failed);
     
@@ -250,4 +250,59 @@ BRCA1\t672\tBCM\tGRCh37\tchr2\t50000\t50000\t+\tMissense_Mutation\tSNP\tC\tC\tT\
     let _ = std::fs::remove_file(&input_path);
     let _ = std::fs::remove_file(&fast_output);
     let _ = std::fs::remove_file(fast_output.with_extension("maf.unmap"));
+}
+
+/// The parallel mapping path must write the same bytes as the sequential one.
+///
+/// The input is larger than `CHUNK_SIZE` (10,000), so it spans several batches,
+/// and it revisits `chr1` after other chromosomes.
+#[test]
+fn test_maf_threads_byte_identical() {
+    let chain_path = PathBuf::from("tests/data/GRCh37_to_GRCh38.chain.gz");
+    if !chain_path.exists() {
+        eprintln!("Skipping test: chain file not found");
+        return;
+    }
+
+    let index = ChainIndex::from_chain_file(&chain_path).expect("Failed to load chain file");
+    let mapper = CoordinateMapper::new(index, ChromStyle::AsIs);
+
+    let mut maf = String::from(
+        "#version 2.4\nHugo_Symbol\tEntrez_Gene_Id\tCenter\tNCBI_Build\tChromosome\tStart_Position\tEnd_Position\tStrand\tVariant_Classification\tVariant_Type\tReference_Allele\tTumor_Seq_Allele1\tTumor_Seq_Allele2\tdbSNP_RS\tdbSNP_Val_Status\tTumor_Sample_Barcode\n",
+    );
+    let chroms = ["chr1", "chr2", "chr10"];
+    for i in 0..12_000u64 {
+        // Every 97th row sits on a chromosome the chain has never heard of, so the
+        // `.maf.unmap` half of the comparison is exercised too.
+        let chrom: &str = if i % 97 == 0 { "chrNotInChain" } else { chroms[(i % 3) as usize] };
+        let pos = 100_000 + (i % 500) * 10;
+        maf.push_str(&format!(
+            "GENE{}\t{}\tTestCenter\tGRCh37\t{}\t{}\t{}\t+\tMissense_Mutation\tSNP\tA\tA\tG\t.\t.\tSAMPLE_{}\n",
+            i, 10_000 + i, chrom, pos, pos, i
+        ));
+    }
+
+    let temp_dir = std::env::temp_dir();
+    let input_path = temp_dir.join("test_threads_input.maf");
+    std::fs::write(&input_path, &maf).unwrap();
+
+    let mut outputs = Vec::new();
+    for t in [1usize, 4] {
+        let out = temp_dir.join(format!("test_threads_{}.maf", t));
+        convert_maf(&input_path, &out, &mapper, None::<&PathBuf>, "GRCh38", t).unwrap();
+        outputs.push((
+            std::fs::read(&out).unwrap(),
+            std::fs::read(out.with_extension("maf.unmap")).unwrap(),
+        ));
+    }
+
+    assert_eq!(outputs[0].0, outputs[1].0, "-t 4 .maf differs from -t 1");
+    assert_eq!(outputs[0].1, outputs[1].1, "-t 4 .maf.unmap differs from -t 1");
+
+    for t in [1usize, 4] {
+        let out = temp_dir.join(format!("test_threads_{}.maf", t));
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_file(out.with_extension("maf.unmap"));
+    }
+    let _ = std::fs::remove_file(&input_path);
 }

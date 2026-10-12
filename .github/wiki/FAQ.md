@@ -45,7 +45,7 @@ A: Records that couldn't be converted, with failure reasons.
 A: Yes! Supports .gz and .bz2 for both chain files and input files.
 
 **Q: How many threads should I use?**  
-A: BED: 1-2 threads (I/O-bound), BAM: 4-8 threads (CPU-bound), VCF: 4 threads.
+A: Every format except `region` accepts `-t`. Text and binary record formats scale best on the CPU-bound mapping step: BAM: 4-8 threads, VCF/GVCF: 4 threads. I/O-bound formats gain little: BED: 1-2 threads, and Wiggle/BigWig/MAF typically 2-4 (they are dominated by read/spool/write rather than by the chain lookup). The default is 1 thread, which keeps results reproducible.
 
 ---
 

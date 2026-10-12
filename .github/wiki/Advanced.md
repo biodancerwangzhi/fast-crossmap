@@ -18,7 +18,7 @@ fast-crossmap [OPTIONS] <SUBCOMMAND>
 | `-h, --help` | Print help |
 | `-V, --version` | Print version |
 
-### Common Options (all formats)
+### Common Options (all formats except `region`)
 
 | Option | Description |
 |--------|-------------|
@@ -178,9 +178,22 @@ fast-crossmap bam -t 0 chain.gz input.bam output.bam  # 0 = all cores
 
 | Format | Speedup Potential | Recommendation |
 |--------|-------------------|----------------|
-| BED | Limited (I/O-bound) | 1-2 threads |
+| BED | Limited (small absolute times) | 1-2 threads |
 | BAM | Significant (CPU-bound) | 4-8 threads |
-| VCF | Moderate | 4 threads |
+| VCF/GVCF | Moderate | 4 threads |
+| GFF | Moderate | 4 threads |
+| Wiggle/BigWig | Modest (1.4x / 1.3x at 16 threads) | 2-4 threads |
+| MAF | Limited (reference fetch dominates) | 2-4 threads |
+
+`-t` resolves the per-record coordinate mapping only; parsing, merging, and output
+stay on one thread, so the number of threads never changes the bytes written.
+
+That is also what caps the gain. On Wiggle/BigWig the mapping is only about 28% of
+the single-threaded runtime, so the whole curve tops out near 1.4x however many
+cores are available, and parallel efficiency falls below 0.5 past two threads
+(measured on a 24-core machine over `wig_gm12878_h3k27ac`, `-t 1..16`). The
+limit is the small parallel fraction -- not I/O -- so more threads cannot lift it;
+only parallelising the read/merge/write stages could, and that is not implemented.
 
 **Memory:** Multi-threading does NOT significantly increase memory (~16 MB → ~20 MB with 8 threads)
 
