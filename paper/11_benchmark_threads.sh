@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# 20_benchmark_threads.sh - FastCrossMap 多线程扩展性 benchmark
+# 11_benchmark_threads.sh - FastCrossMap 多线程扩展性 benchmark
 #
 # 用法 (在仓库根目录):
-#   bash paper/20_benchmark_threads.sh
+#   bash paper/11_benchmark_threads.sh
 #
 # 环境变量:
 #   FCM       fast-crossmap 可执行文件   (默认: ./target/release/fast-crossmap)
@@ -24,9 +24,9 @@
 #
 # 运行时长提示: 默认 FORMATS 覆盖 8 种格式, 一次跑完通常要数小时 —— WIG/BigWig 的真实
 #   输入是 1-2 GB, MAF 每条记录都要去参考基因组取 REF 碱基。只想验某几种就:
-#     FORMATS="wig bigwig maf" bash paper/20_benchmark_threads.sh
+#     FORMATS="wig bigwig maf" bash paper/11_benchmark_threads.sh
 #   只想采样一两个线程数就:
-#     THREADS="1 4" REPS=3 FORMATS="maf" bash paper/20_benchmark_threads.sh
+#     THREADS="1 4" REPS=3 FORMATS="maf" bash paper/11_benchmark_threads.sh
 #
 # 输出:
 #   $OUT/timings.tsv   原始耗时  (format, threads, rep, wall_s, user_s, sys_s, max_rss_kb, flush_s, ok)
@@ -468,7 +468,7 @@ echo
 echo "逐次原始数据: $TIMINGS"
 echo "哈希抽查:     $OUT/sha256.txt  (同一 format 下不同 t 应完全相同)"
 echo "环境:         $ENV_F"
-echo "有差异时:     bash paper/21_check_determinism.sh"
+echo "有差异时:     bash paper/12_check_determinism.sh"
 echo
 echo "读表提示:"
 echo "  flag=UNRELIABLE  → 该行抖动过大, 结论不可用, 用 FORMATS=<该格式> 单独加 REPS 重跑"

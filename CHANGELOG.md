@@ -114,8 +114,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Benchmark scripts for performance comparison
 
 ### Performance
-- 10-20x faster than CrossMap (single-threaded)
-- 64x less memory usage for BAM processing
+- 3–13x faster than CrossMap (single-threaded, across all eight formats)
+- 2–63x less peak memory than CrossMap
 - Near-linear multi-threading scalability
 
 [Unreleased]: https://github.com/biodancerwangzhi/fast-crossmap/compare/v0.6.0...HEAD

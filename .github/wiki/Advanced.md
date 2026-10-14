@@ -235,18 +235,20 @@ fast-crossmap bed chain.gz input.bed output.bed
 
 | Format | FastCrossMap (1T) | CrossMap | liftOver | FastRemap (4T) |
 |--------|-------------------|----------|----------|----------------|
-| BED (297K) | **0.28s (10x)** | 2.85s (1x) | 3.28s | 1.67s |
-| BAM (1.3GB) | **86s (8x)** | 679s (1x) | N/A | 58s |
+| BED (297K) | **0.27s (11.12x)** | 3.05s (1x) | 1.93s | 1.02s |
+| BAM (1.3GB) | **76.73s (10.66x)** | 818.29s (1x) | N/A | 52.87s |
 
 ### Memory
 
 | Tool | Peak Memory (BAM) |
 |------|-------------------|
-| **FastCrossMap** | **16 MB** |
-| CrossMap | 1,022 MB |
-| FastRemap | 70 MB |
+| **FastCrossMap** | **14.49 MB** |
+| CrossMap | 1,022.00 MB |
+| FastRemap | 41.11 MB |
 
-FastCrossMap uses **64x less memory** than CrossMap.
+On this dataset FastCrossMap uses **70.5x less memory** than CrossMap; across the
+four BAM datasets the median paired reduction is **63.20x**, and across all eight
+formats it ranges from **2x to 63x**.
 
 ### Feature Comparison
 

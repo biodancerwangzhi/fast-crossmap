@@ -365,7 +365,7 @@ def main():
         if mem_variation < 10:
             print(f"  ✓ Memory usage is nearly constant, confirming streaming architecture effectiveness")
     
-    print(f"\nNext step: python paper/06b_plot_memory_scalability.py")
+    print(f"\nNext step: python paper/07_accuracy_analysis.py")
 
 
 if __name__ == "__main__":

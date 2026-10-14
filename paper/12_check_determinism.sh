@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# 21_check_determinism.sh - 校验 -t N 与 -t 1 的输出是否逐字节相同
+# 12_check_determinism.sh - 校验 -t N 与 -t 1 的输出是否逐字节相同
 #
 # 用法 (在仓库根目录):
-#   bash paper/21_check_determinism.sh
+#   bash paper/12_check_determinism.sh
 #
 # 环境变量:
 #   FCM     fast-crossmap 可执行文件   (默认: ./target/release/fast-crossmap)
@@ -64,7 +64,7 @@ plain() {
     echo "$out"
 }
 
-# 某格式在给定前缀下的全部产物, 一行一个。必须和 20_benchmark_threads.sh 里的
+# 某格式在给定前缀下的全部产物, 一行一个。必须和 11_benchmark_threads.sh 里的
 # artifacts_of 保持一致 —— 两边的产物命名规则来自各格式的实现:
 #   wig/bigwig 是「前缀式」输出 (<前缀>.wig / <前缀>.bw), unmap 是 <前缀>.unmap.*;
 #   其余格式的 unmap 是 output 的**扩展名被替换**得来的 (gff.t1 -> gff.gff.unmap),

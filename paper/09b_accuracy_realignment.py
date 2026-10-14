@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-10_accuracy_realignment.py - Compare FastCrossMap liftover vs BWA-MEM re-alignment accuracy
+09b_accuracy_realignment.py - Compare FastCrossMap liftover vs BWA-MEM re-alignment accuracy
 
 Uses wgsim simulated reads (ground truth in read names) to compare:
 1. Re-alignment: FASTQ → BWA-MEM(hg38) → sorted BAM
@@ -12,7 +12,7 @@ Metrics:
 - Strand concordance rate
 - Overall concordance rate (same chrom + position within threshold + same strand)
 
-Usage: python3 paper/10_accuracy_realignment.py [--scale 1M] [--threads 4]
+Usage: python3 paper/09b_accuracy_realignment.py [--scale 1M] [--threads 4]
 """
 
 import argparse

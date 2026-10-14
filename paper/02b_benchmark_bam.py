@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-03_benchmark_bam.py - BAM format benchmark (multi-dataset)
+02b_benchmark_bam.py - BAM format benchmark (multi-dataset)
 
 Run FastCrossMap vs CrossMap vs FastRemap benchmark
 across multiple BAM datasets. Collects read counts via samtools flagstat.
 
-Usage: python paper/03_benchmark_bam.py
+Usage: python paper/02b_benchmark_bam.py
 Output: paper/results/benchmark_bam.json
 """
 
@@ -626,7 +626,7 @@ def main():
         by_med = cm.median_time_sec / fc.median_time_sec
         print(f"  {name:<20} {by_mean:7.1f}x {by_min:7.1f}x {by_med:7.1f}x")
 
-    print("\nNext step: python paper/03b_benchmark_bam_multithread.py")
+    print("\nNext step: python paper/02c_benchmark_vcf.py")
 
 
 if __name__ == "__main__":

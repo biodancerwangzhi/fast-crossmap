@@ -4,13 +4,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build Status](https://github.com/biodancerwangzhi/fast-crossmap/workflows/Release/badge.svg)](https://github.com/biodancerwangzhi/fast-crossmap/actions)
 
-**FastCrossMap** is a high-performance genome coordinate liftover tool written in Rust. It achieves **10-20x speedup** over Python CrossMap while maintaining **100% output compatibility**.
+**FastCrossMap** is a high-performance genome coordinate liftover tool written in Rust. It achieves a **3–13x speedup** over Python CrossMap while maintaining **100% output compatibility**.
 
 ## Features
 
-- 🚀 **10-20x faster** than CrossMap (single-threaded)
+- 🚀 **3–13x faster** than CrossMap (single-threaded, across all eight formats)
 - 🧵 **Multi-threading support**: `-t N` on every format except `region` (`-t 0` = all cores)
-- 💾 **~70x less memory** usage (14.5MB vs 1,022MB for BAM processing)
+- 💾 **2–63x less peak memory** than CrossMap (single-threaded, across all eight formats)
 - ✅ **100% compatible** with CrossMap output (strict mode)
 - 📦 **8 file formats** supported: BED, BAM/SAM, VCF, GVCF, GFF/GTF, Wiggle, BigWig, MAF
 - 🗜️ **Compressed file support**: .gz, .bz2 for both chain files and input files

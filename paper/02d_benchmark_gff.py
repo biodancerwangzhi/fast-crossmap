@@ -728,7 +728,7 @@ def main():
         by_med = cm.median_time_sec / fc.median_time_sec
         print(f"  {name:<20} {by_mean:7.1f}x {by_min:7.1f}x {by_med:7.1f}x")
 
-    print("\nNext step: python paper/plot/fig1_performance.py")
+    print("\nNext step: python paper/02e_benchmark_wig.py")
 
 
 if __name__ == "__main__":

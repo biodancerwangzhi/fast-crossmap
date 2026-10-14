@@ -37,7 +37,7 @@ curl -sSL https://api.github.com/repos/biodancerwangzhi/fast-crossmap/releases/l
 mkdir -p target/release
 tar -xzf fcm-*-linux-x86_64.tar.gz -C target/release --strip-components=1 \
     'fcm-*/fast-crossmap'
-./target/release/fast-crossmap --version      # should print 0.6.0
+./target/release/fast-crossmap --version      # should print 0.7.0
 ```
 
 Other Linux builds, same version-agnostic pattern:
@@ -110,48 +110,45 @@ environment described under *Full Benchmark* below.
 | Script | Command form | Writes |
 |--------|--------------|--------|
 | `02_benchmark_bed.py` | `bed` | `benchmark_bed.json` |
-| `02b_benchmark_bed_multithread.py` | `bed -t N` | `benchmark_bed_multithread.json` |
+| `02b_benchmark_bam.py` | `bam` | `benchmark_bam.json` |
 | `02c_benchmark_vcf.py` | `vcf` | `benchmark_vcf.json` |
 | `02d_benchmark_gff.py` | `gff` | `benchmark_gff.json` |
 | `02e_benchmark_wig.py` | `wig` | `benchmark_wig.json` |
 | `02f_benchmark_bigwig.py` | `bigwig` | `benchmark_bigwig.json` |
 | `02g_benchmark_maf.py` | `maf` | `benchmark_maf.json` |
 | `02h_benchmark_sam.py` | `bam` (SAM input) | `benchmark_sam.json` |
-| `03_benchmark_bam.py` | `bam -t N` | `benchmark_bam.json` |
-| `03b_benchmark_bam_multithread.py` | `bam -t N` | `benchmark_bam_multithread.json` |
 | `05_memory_profile.py` | `bam` (RSS sampling) | `memory_profile.json` |
 | `05b_memory_scalability.py` | `bam` (RSS sampling) | `memory_scalability.json` |
 | `07_accuracy_analysis.py` | `bed` vs liftOver | `accuracy.json` |
 | `09_benchmark_realignment.py` | `bam`, `bwa` | `benchmark_realignment.json` |
-| `10_accuracy_realignment.py --scale 1M\|5M\|10M` | `bam`, `bwa` | `accuracy_realignment_<scale>.json` |
+| `09b_accuracy_realignment.py --scale 1M\|5M\|10M` | `bam`, `bwa` | `accuracy_realignment_<scale>.json` |
+| `14_bam_coverage.py` | `samtools` | `bam_coverage.json` |
 
 ### Figures and tables - read the JSON above, write `paper/figures/*` and `paper/results/*`
 
 These need only `matplotlib` + `numpy`; no comparison tools.
-The plotting scripts live in `paper/plot/`; run them from the repository root
-(they resolve `paper/results` and `paper/figures` relative to the working directory).
+The plotting scripts live in `paper/plot/`; the table generators (`19`, `20`) and
+everything else here sit at the `paper/` root. Run them all from the repository
+root: they resolve `paper/results` and `paper/figures` relative to the working
+directory.
 
 | Script | Reads | Writes |
 |--------|-------|--------|
-| `plot/fig1_performance.py` | `benchmark_bed.json`, `benchmark_bam.json`, `benchmark_{bed,bam}_multithread.json` | `fig1_performance.*`, `fig1a`-`fig1d` |
-| `plot/fig2_memory.py` | `memory_profile.json` | `fig2_memory.*`, `fig2a`, `fig2b` |
-| `plot/06b_plot_memory_scalability.py` | `memory_scalability.json` | `figS2_memory_scalability.*`, `figS2a`-`figS2c` |
-| `plot/fig3_accuracy.py` | `accuracy.json` | `fig3_accuracy.*`, `fig3a`, `fig3b` |
-| `09_feature_audit.py` | (feature matrix is entered here) | `features.json` |
-| `plot/fig4_features.py` | `features.json` | `fig4_features.*`, `fig4_features_heatmap` |
-| `plot/fig5_radar.py` | `benchmark_bed.json`, `benchmark_bam.json`, `memory_profile.json`, `features.json`, `accuracy.json` | `fig5_radar.*`, `fig5_radar_chart`, `radar_scores.json` |
 | `plot/figS1_scaling.py` | `benchmark_vcf.json`, `benchmark_maf.json` | `figS1_scaling.*`, `scaling_fit.json` |
-| `13_large_scale_estimation.py` | `benchmark_bed.json`, `benchmark_bam.json`, `benchmark_vcf.json` | `large_scale_estimation.json` |
-| `plot/18_plot_supplementary.py` | all eight `benchmark_*.json` | `fig_s1_all_formats.*`, `fig_s2_speedup_consistency.*` |
+| `plot/figS2_realignment.py` | `benchmark_realignment.json` | `figS2_realignment.*`, `realignment_fit.json` |
+| `plot/figS3_threads.py` | `results/threads-*/summary.tsv` | `figS3_threads.*` |
+| `plot/figS4_memory_by_format.py` | all eight `benchmark_*.json` | `figS4_memory_by_format.*`, `memory_by_format.json` |
+| `plot/figS5_realignment_accuracy.py` | `accuracy_realignment_{1M,10M}.json` | `figS5_realignment_accuracy.*`, `realignment_accuracy_summary.json` |
 | `19_generate_supp_table.py` | all eight `benchmark_*.json` | `supplementary_tables.json` |
+| `20_large_scale_estimation.py` | `benchmark_bed.json`, `benchmark_bam.json`, `benchmark_vcf.json` | `large_scale_estimation.json` |
 
 ### Threading and determinism tools - need the FastCrossMap binary
 
 | Script | Purpose | Writes |
 |--------|---------|--------|
-| `20_benchmark_threads.sh` | `-t N` scaling per format | `paper/results/threads-<timestamp>/{timings,summary}.tsv` |
-| `21_check_determinism.sh` | output must be byte-identical across `-t` | `paper/results/determinism-<timestamp>/` |
-| `22_run_benchmarks_pinned.sh` | run `02*`/`03` with one core pinned each | per-script logs |
+| `11_benchmark_threads.sh` | `-t N` scaling per format | `paper/results/threads-<timestamp>/{timings,summary}.tsv` |
+| `12_check_determinism.sh` | output must be byte-identical across `-t` | `paper/results/determinism-<timestamp>/` |
+| `03_run_benchmarks_pinned.sh` | run the `02*` benchmarks with one core pinned each | per-script logs |
 
 ---
 
@@ -174,7 +171,7 @@ bash paper/01_download_data.sh
 
 One script per format. On a multi-core machine the eight single-format
 benchmarks can instead run in parallel with one core pinned each -- see
-`22_run_benchmarks_pinned.sh` below.
+`03_run_benchmarks_pinned.sh` below.
 
 ```bash
 python paper/02_benchmark_bed.py        # -> benchmark_bed.json
@@ -184,36 +181,28 @@ python paper/02e_benchmark_wig.py       # -> benchmark_wig.json
 python paper/02f_benchmark_bigwig.py    # -> benchmark_bigwig.json
 python paper/02g_benchmark_maf.py       # -> benchmark_maf.json
 python paper/02h_benchmark_sam.py       # -> benchmark_sam.json
-python paper/03_benchmark_bam.py        # -> benchmark_bam.json
+python paper/02b_benchmark_bam.py       # -> benchmark_bam.json
 
 # Memory and accuracy
 python paper/05_memory_profile.py       # -> memory_profile.json
 python paper/05b_memory_scalability.py  # -> memory_scalability.json
 python paper/07_accuracy_analysis.py    # -> accuracy.json
+python paper/14_bam_coverage.py         # -> bam_coverage.json
 
 # Re-alignment accuracy (needs bwa + the hg19/hg38 reference FASTA)
 python paper/09_benchmark_realignment.py
-python paper/10_accuracy_realignment.py --scale 10M --threads 4
-```
-
-Single-thread vs multi-thread curves for BED/BAM, used for Figure 1(b)/(d):
-```bash
-python paper/02b_benchmark_bed_multithread.py   # -> paper/results/benchmark_bed_multithread.json
-python paper/03b_benchmark_bam_multithread.py   # -> paper/results/benchmark_bam_multithread.json
+python paper/09b_accuracy_realignment.py --scale 10M --threads 4
 ```
 
 **Step 4: Generate figures and tables** (local, JSON only)
 ```bash
-python paper/plot/fig1_performance.py
-python paper/plot/fig2_memory.py
-python paper/plot/06b_plot_memory_scalability.py
-python paper/plot/fig3_accuracy.py
-python paper/plot/fig4_features.py
-python paper/plot/fig5_radar.py
 python paper/plot/figS1_scaling.py
-python paper/13_large_scale_estimation.py
-python paper/plot/18_plot_supplementary.py
+python paper/plot/figS2_realignment.py
+python paper/plot/figS3_threads.py
+python paper/plot/figS4_memory_by_format.py
+python paper/plot/figS5_realignment_accuracy.py
 python paper/19_generate_supp_table.py
+python paper/20_large_scale_estimation.py
 ```
 
 All benchmark scripts expect the binary at `./target/release/fast-crossmap`,
@@ -233,8 +222,8 @@ I/O-bound, so their curves rise much less than BAM's — run a subset while
 debugging:
 
 ```bash
-bash paper/20_benchmark_threads.sh
-bash paper/21_check_determinism.sh   # output must be byte-identical across -t
+bash paper/11_benchmark_threads.sh
+bash paper/12_check_determinism.sh   # output must be byte-identical across -t
 ```
 
 ---

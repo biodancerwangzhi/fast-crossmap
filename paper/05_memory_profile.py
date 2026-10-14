@@ -373,7 +373,7 @@ def main():
             print(f"CrossMap peak memory: {cm.peak_memory_mb:.2f} MB")
             print(f"Memory savings: {mem_ratio:.2f}x (CrossMap uses {mem_ratio:.1f}x memory)")
     
-    print("\nNext step: python paper/plot/fig2_memory.py")
+    print("\nNext step: python paper/05b_memory_scalability.py")
 
 
 if __name__ == "__main__":

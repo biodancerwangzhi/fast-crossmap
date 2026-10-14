@@ -61,9 +61,13 @@ PANELS = [
         "time_divisor": 3600.0,          # seconds -> hours
         "ylabel": "Runtime (hours)",
         "extrap_label": "{:.1f} h",
-        "marks": [(1e6, "1M\n(1 cohort)"),
-                  (1e7, "10M\n(10 cohorts)"),
-                  (6e8, "600M\n(30 cohorts)")],
+        # reference marks carry only the scale: the previous "(N cohorts)"
+        # annotations had no citable source and contradicted the cohort count
+        # used in 20_large_scale_estimation.py, so they are dropped rather than
+        # given a number the manuscript cannot support.
+        "marks": [(1e6, "1M"),
+                  (1e7, "10M"),
+                  (6e8, "600M")],
     },
     {
         "key": "MAF",

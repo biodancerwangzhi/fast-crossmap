@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-13_large_scale_estimation.py - Large-scale scenario time estimation
+20_large_scale_estimation.py - Large-scale scenario time estimation
 
 Extrapolate benchmark throughput to real-world large-scale scenarios:
   Scenario 1: GWAS meta-analysis (50 cohorts × 10M SNP VCFs)
   Scenario 2: Multi-center WGS cohort (100 samples × 60GB BAMs)
   Scenario 3: Pan-cancer variant database migration (1000 VCFs)
 
-Usage: python paper/13_large_scale_estimation.py
+Usage: python paper/20_large_scale_estimation.py
 Output: paper/results/large_scale_estimation.json
 """
 

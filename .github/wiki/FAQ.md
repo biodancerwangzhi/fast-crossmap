@@ -6,7 +6,7 @@
 A: A high-performance genome coordinate liftover tool written in Rust.
 
 **Q: How is it different from CrossMap?**  
-A: 10-20x faster, 64x less memory, multi-threading support, same output compatibility.
+A: 3–13x faster, 2–63x less peak memory, multi-threading support, same output compatibility.
 
 **Q: Which formats are supported?**  
 A: BED, BAM/SAM, VCF, GVCF, GFF/GTF, Wiggle, BigWig, MAF (8 formats total).

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# 22_run_benchmarks_pinned.sh
+# 03_run_benchmarks_pinned.sh
 #
 # Run the single-format timing benchmarks with each benchmark pinned to its own
 # physical core, so the tools inside them never end up sharing a core.
@@ -32,20 +32,14 @@
 #
 # Usage
 # -----
-#   bash paper/22_run_benchmarks_pinned.sh                 # all eight, pinned
-#   bash paper/22_run_benchmarks_pinned.sh --dry-run       # print the plan only
-#   bash paper/22_run_benchmarks_pinned.sh 02d_benchmark_gff 03_benchmark_bam
-#   bash paper/22_run_benchmarks_pinned.sh --with-multithread
-#   bash paper/22_run_benchmarks_pinned.sh --jobs 4        # at most 4 at a time
+#   bash paper/03_run_benchmarks_pinned.sh                 # all eight, pinned
+#   bash paper/03_run_benchmarks_pinned.sh --dry-run       # print the plan only
+#   bash paper/03_run_benchmarks_pinned.sh 02d_benchmark_gff 02b_benchmark_bam
+#   bash paper/03_run_benchmarks_pinned.sh --jobs 4        # at most 4 at a time
 #
 # --jobs caps how many run concurrently (using that many physical cores); the
 # rest wait their turn. Only needed on a machine whose cores are wanted for
 # something else -- the default runs one per physical core.
-#
-# The two multithread-scalability scripts (02b, 03b) are deliberately NOT pinned:
-# they measure how a tool scales across N cores, so confining one to a single
-# core would defeat the measurement. Pass --with-multithread to run them after
-# the pinned batch, one at a time, once the machine has gone quiet.
 #
 # Run from anywhere; the script cd's to the repository root itself, because the
 # benchmark scripts resolve their inputs as `paper/data/...` relative paths.
@@ -56,7 +50,7 @@ set -euo pipefail
 # --- the eight single-format timing scripts ---------------------------------
 DEFAULT_SCRIPTS=(
     02_benchmark_bed
-    03_benchmark_bam
+    02b_benchmark_bam
     02c_benchmark_vcf
     02d_benchmark_gff
     02e_benchmark_wig
@@ -65,24 +59,16 @@ DEFAULT_SCRIPTS=(
     02h_benchmark_sam
 )
 
-# Multithread scalability: run unpinned, after the pinned batch.
-MULTITHREAD_SCRIPTS=(
-    02b_benchmark_bed_multithread
-    03b_benchmark_bam_multithread
-)
-
-WITH_MULTITHREAD=0
 DRY_RUN=0
 JOBS=0                 # 0 = one per physical core
 SCRIPTS=()
 LOGDIR=""
 
-usage() { sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # --- arguments ---------------------------------------------------------------
 while [ $# -gt 0 ]; do
     case "$1" in
-        --with-multithread) WITH_MULTITHREAD=1 ;;
         --dry-run|--plan)   DRY_RUN=1 ;;
         --jobs)             JOBS="${2:?--jobs needs a number}"; shift ;;
         --logdir)           LOGDIR="${2:?--logdir needs a directory}"; shift ;;
@@ -173,9 +159,6 @@ for ((w = 0; w < WAVES; w++)); do
     done
     echo
 done
-if [ "$WITH_MULTITHREAD" -eq 1 ]; then
-    echo " then (unpinned, after the above): ${MULTITHREAD_SCRIPTS[*]}"
-fi
 echo
 
 # A machine that is already busy will still distort the run; that is worth
@@ -246,15 +229,6 @@ for ((w = 0; w < WAVES; w++)); do
     echo
 done
 
-if [ "$WITH_MULTITHREAD" -eq 1 ]; then
-    echo "--- multithread scalability (unpinned, sequential) ---"
-    for script in "${MULTITHREAD_SCRIPTS[@]}"; do
-        [ -f "paper/${script}.py" ] || { echo "  skip ${script} (not found)"; continue; }
-        if run_one "$script" 0 0; then RC["$script"]=0
-        else RC["$script"]=$?; FAILED["$script"]=1; fi
-    done
-    echo
-fi
 
 trap - INT TERM
 
@@ -262,7 +236,7 @@ trap - INT TERM
 echo "=============================================================================="
 echo " Results"
 echo "=============================================================================="
-for script in "${SCRIPTS[@]}" "${MULTITHREAD_SCRIPTS[@]}"; do
+for script in "${SCRIPTS[@]}"; do
     [ -n "${RC[$script]+x}" ] || continue
     if [ "${FAILED[$script]:-0}" -eq 1 ]; then
         printf '  %-32s EXIT %s   <- see %s\n' "$script" "${RC[$script]}" \
